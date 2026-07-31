@@ -1,0 +1,25 @@
+{
+  "name": "@lingying/cli",
+  "version": "0.1.0",
+  "description": "Lingying Gateway CLI — AI 模型网关命令行工具",
+  "bin": {
+    "ly": "scripts/run.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  },
+  "os": ["darwin", "linux", "win32"],
+  "cpu": ["x64", "arm64"],
+  "engines": {
+    "node": ">=16"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lingying/ly-cli.git"
+  },
+  "license": "MIT",
+  "files": [
+    "scripts/install.js",
+    "scripts/run.js"
+  ]
+}
