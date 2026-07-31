@@ -1,0 +1,65 @@
+# goreleaser — cross-compile + GitHub Release + npm publish in one command.
+#
+#   git tag v0.1.0 && git push --tags
+#   goreleaser release --clean
+#
+# Requires: GITHUB_TOKEN env var with repo write permissions.
+# Requires: NPM_TOKEN env var for npm publish (optional — remove npm section if not needed).
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: ly
+    binary: ly
+    main: .
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/Din-Studio/lingying-cli/cmd.Version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+
+archives:
+  - id: ly
+    builds: [ly]
+    name_template: "ly-{{.Version}}-{{.Os}}-{{.Arch}}"
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - LICENSE
+      - README.md
+      - skills/SKILL.md
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: Din-Studio
+    name: lingying-cli
+
+# ── npm publish ──
+# Uncomment when you have an npm token:
+# npm:
+#   - name: "@lingying/cli"
+#     token: "{{.Env.NPM_TOKEN}}"
