@@ -29,16 +29,16 @@ builds:
 
 archives:
   - id: ly
-    builds: [ly]
     name_template: "ly-{{.Version}}-{{.Os}}-{{.Arch}}"
-    format: tar.gz
+    formats: ["tar.gz"]
     format_overrides:
       - goos: windows
-        format: zip
+        formats: ["zip"]
     files:
-      - LICENSE
-      - README.md
-      - skills/SKILL.md
+      - src: LICENSE
+      - src: README.md
+      - src: skills/SKILL.md
+        dst: skills/
 
 checksum:
   name_template: "checksums.txt"
