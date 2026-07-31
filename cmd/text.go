@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lingying/ly-cli/internal/auth"
-	"github.com/lingying/ly-cli/internal/client"
-	"github.com/lingying/ly-cli/internal/output"
+	"github.com/Din-Studio/lingying-cli/internal/auth"
+	"github.com/Din-Studio/lingying-cli/internal/client"
+	"github.com/Din-Studio/lingying-cli/internal/output"
 	"github.com/spf13/cobra"
 )
 

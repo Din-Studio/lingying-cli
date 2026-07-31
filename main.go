@@ -1,6 +1,6 @@
 package main
 
-import "github.com/lingying/ly-cli/cmd"
+import "github.com/Din-Studio/lingying-cli/cmd"
 
 func main() {
 	cmd.Execute()

@@ -3,7 +3,7 @@
 // postinstall — downloads ly binary for the current platform.
 //
 //   npm install -g @lingying/cli    → downloads prebuilt binary from GitHub Releases
-//   go install github.com/lingying/ly-cli@latest  → builds from source
+//   go install github.com/Din-Studio/lingying-cli@latest  → builds from source
 //   git clone && make install       → builds locally
 //
 // If no prebuilt binary exists for this version, falls back with a helpful
@@ -27,7 +27,7 @@ if (!PLATFORM || !ARCH) {
 const isWindows = process.platform === "win32";
 const ext = isWindows ? ".zip" : ".tar.gz";
 const asset = `${NAME}-${VERSION}-${PLATFORM}-${ARCH}${ext}`;
-const RELEASE_BASE = `https://github.com/lingying/ly-cli/releases/download/v${VERSION}`;
+const RELEASE_BASE = `https://github.com/Din-Studio/lingying-cli/releases/download/v${VERSION}`;
 const BINARY_URL = `${RELEASE_BASE}/${asset}`;
 const CHECKSUM_URL = `${RELEASE_BASE}/checksums.txt`;
 
@@ -233,9 +233,9 @@ async function main() {
     if (err.message === "NO_RELEASE") {
       console.log(`⚠  No prebuilt binary for v${VERSION} yet.`);
       console.log("   Install from source:");
-      console.log("     go install github.com/lingying/ly-cli@latest");
+      console.log("     go install github.com/Din-Studio/lingying-cli@latest");
       console.log("   or:");
-      console.log("     git clone https://github.com/lingying/ly-cli && cd ly-cli && make install");
+      console.log("     git clone https://github.com/Din-Studio/lingying-cli && cd ly-cli && make install");
     } else {
       console.error(`❌ ${err.message}`);
     }

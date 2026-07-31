@@ -1,5 +1,5 @@
 BINARY   := ly
-MODULE   := github.com/lingying/ly-cli
+MODULE   := github.com/Din-Studio/lingying-cli
 VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 DATE     := $(shell date +%Y-%m-%d)
 LDFLAGS  := -s -w -X $(MODULE)/cmd.Version=$(VERSION)

@@ -1,4 +1,4 @@
-module github.com/lingying/ly-cli
+module github.com/Din-Studio/lingying-cli
 
 go 1.26.2
 

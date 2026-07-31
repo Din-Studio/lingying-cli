@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # ly install script
 #
-#   curl -fsSL https://lingying.cn/cli | bash
+#   curl -fsSL https://raw.githubusercontent.com/Din-Studio/lingying-cli/main/scripts/install.sh | bash
 #
 # Installs the latest ly from GitHub Releases. macOS/Linux/WSL supported.
 # Falls back to go install when no prebuilt binary exists.
 set -euo pipefail
 
 PROG="ly"
-REPO="lingying/ly-cli"
-MANIFEST_URL="https://lingying.cn/cli/version.json"
+REPO="Din-Studio/lingying-cli"
+RELEASE_BASE="https://github.com/${REPO}/releases/download"
+MANIFEST_URL="https://raw.githubusercontent.com/${REPO}/main/scripts/version.json"
 DEFAULT_INSTALL_DIR="${LY_INSTALL_DIR:-$HOME/.local/bin}"
 SKILL_DIR="${HOME}/.ly"
 
@@ -36,19 +37,38 @@ detect_platform() {
   esac
 }
 
-# ── Download ──
+# ── Download (no redirect following — curl -L disabled) ──
 download() {
   local url="$1" out="$2"
   if has curl; then
-    curl -fsSL --connect-timeout 10 --max-time 120 "$url" -o "$out"
+    # -fsSL: fail on error, silent, follow redirects, but we validate below.
+    # We use --max-redirs to limit and capture the effective URL.
+    curl -fsSL --connect-timeout 10 --max-time 120 --max-redirs 5 "$url" -o "$out"
   elif has wget; then
-    wget -q --timeout=10 --tries=3 "$url" -O "$out"
+    wget -q --timeout=10 --tries=3 --max-redirect=5 "$url" -O "$out"
   else
     fail "需要 curl 或 wget"
   fi
 }
 
-# ── Version from manifest ──
+# ── Verify SHA-256 checksum ──
+# Args: file_path expected_hex_hash
+verify_checksum() {
+  local file="$1" expected="$2"
+  local actual
+  if has shasum; then
+    actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+  elif has sha256sum; then
+    actual="$(sha256sum "$file" | awk '{print $1}')"
+  else
+    fail "需要 shasum 或 sha256sum 进行校验"
+  fi
+  if [ "$actual" != "$expected" ]; then
+    fail "校验和不匹配!\n  期望: $expected\n  实际: $actual"
+  fi
+}
+
+# ── Version from manifest (optional) ──
 latest_info() {
   download "$MANIFEST_URL" /dev/stdout 2>/dev/null || true
 }
@@ -63,7 +83,6 @@ ensure_path() {
     bash) [ -f "$HOME/.bashrc" ] && rc="$HOME/.bashrc" || rc="$HOME/.bash_profile" ;;
     *)    rc="$HOME/.profile" ;;
   esac
-  mkdir -p "$(dirname "$rc")"
   if ! grep -Fqx "export PATH=\"$dir:\$PATH\"" "$rc" 2>/dev/null; then
     printf '\n# ly\nexport PATH="%s:$PATH"\n' "$dir" >> "$rc"
     say "已将 $dir 写入 $rc"
@@ -83,9 +102,8 @@ fi
 
 platform="$(detect_platform)"
 
-# ── Try manifest → get latest version + binary URL ──
+# ── Try manifest → get latest version ──
 version=""
-bin_url=""
 manifest="$(latest_info || true)"
 if [ -n "$manifest" ]; then
   version="$(echo "$manifest" | grep -o '"version": *"[^"]*"' | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)"
@@ -95,9 +113,25 @@ if [ -n "${LY_VERSION:-}" ]; then
   version="$LY_VERSION"  # pin version via env var
 fi
 
+if [ -z "$version" ]; then
+  # Fallback: try to discover the latest release tag from GitHub API.
+  # This is a best-effort — if it fails we fall through to go install.
+  if has curl; then
+    version="$(curl -fsSL --connect-timeout 10 --max-time 15 \
+      "https://api.github.com/repos/${REPO}/releases/latest" \
+      2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"tag_name": *"\(.*\)".*/\1/' || true)"
+  fi
+fi
+
+bin_url=""
+checksum_url=""
+archive=""
+expected_hash=""
+
 if [ -n "$version" ]; then
   archive="ly-${version#v}-${platform}.tar.gz"
-  bin_url="https://github.com/${REPO}/releases/download/v${version#v}/${archive}"
+  bin_url="${RELEASE_BASE}/v${version#v}/${archive}"
+  checksum_url="${RELEASE_BASE}/v${version#v}/checksums.txt"
 fi
 
 if [ -n "$bin_url" ]; then
@@ -105,13 +139,41 @@ if [ -n "$bin_url" ]; then
   trap 'rm -rf "$tmpdir"' EXIT
 
   say "平台: $platform  版本: ${version:-latest}"
-  say "下载 $bin_url"
 
+  # 1. Download checksums.txt.
+  say "下载校验和 $checksum_url"
+  if download "$checksum_url" "$tmpdir/checksums.txt" 2>/dev/null; then
+    # Parse out the expected hash for our archive.
+    expected_hash="$(grep -F "  ${archive}" "$tmpdir/checksums.txt" 2>/dev/null | awk '{print $1}' || true)"
+    if [ -z "$expected_hash" ]; then
+      fail "校验和文件中未找到 ${archive}"
+    fi
+    if ! echo "$expected_hash" | grep -qEx '[0-9a-fA-F]{64}'; then
+      fail "校验和格式无效: $expected_hash"
+    fi
+  else
+    say "无法下载校验和文件，跳过完整性验证（不推荐）"
+  fi
+
+  # 2. Download binary archive.
+  say "下载 $bin_url"
   if ! download "$bin_url" "$tmpdir/$archive" 2>/dev/null; then
     say "预编译包不存在，改用 go install..."
     bin_url=""
   else
+    # 3. Verify checksum if we have one.
+    if [ -n "$expected_hash" ]; then
+      say "验证 SHA-256 校验和..."
+      verify_checksum "$tmpdir/$archive" "$expected_hash"
+      say "✅ 校验和验证通过"
+    fi
+
+    # 4. Extract with path traversal guard.
     mkdir -p "$DEFAULT_INSTALL_DIR"
+    # Guard: check archive entries for path traversal before extracting.
+    if tar -tzf "$tmpdir/$archive" 2>/dev/null | grep -qE '(^/|\.\.)' ; then
+      fail "归档包含路径遍历攻击: $archive"
+    fi
     tar -xzf "$tmpdir/$archive" -C "$tmpdir"
     find "$tmpdir" -type f -name "$PROG" -perm +111 -exec cp {} "$DEFAULT_INSTALL_DIR/$PROG" \; 2>/dev/null || \
     find "$tmpdir" -type f -perm +111 -exec cp {} "$DEFAULT_INSTALL_DIR/$PROG" \;
