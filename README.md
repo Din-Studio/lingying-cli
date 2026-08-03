@@ -96,6 +96,7 @@ ly --json model list
 | `ly text "..."` | 使用默认文本模型对话 |
 | `ly text --model <id> "..."` | 指定模型 ID 或 display name |
 | `ly text --max-tokens 4096 "..."` | 设置最大输出 token 数 |
+| `ly text --param temperature=0.7 "..."` | 传递当前文本模型 schema 的动态字段 |
 | `ly model list` | 列出当前账号可用模型 |
 | `ly model list --type image` | 按模型类型筛选 |
 | `ly model info <id>` | 查看模型详情与 Gateway 返回的 `input_schema` |
@@ -105,6 +106,8 @@ ly --json model list
 CLI 每次调用均从 Gateway 动态发现模型，不缓存或内置静态能力目录。未传 `--model` 时，CLI 从本次发现结果中为命令类型稳定选择一个可用模型；显式 `--model` 仍必须精确匹配，不会悔悔换模型。调用前可先用 `model info` 查看模型当前的输入 schema；字段是否合法由 Gateway 返回最终结果。
 
 对 Agent，`ly --json model info <精确-id>` 的 `data.input_schema` 是 JSON 对象（不是需要再次解析的字符串），且精确 ID 优先于模糊搜索结果；因此应使用同一个精确 ID 传给后续命令的 `--model`。
+
+文本请求同样使用动态 schema 参数：`ly text --param temperature=0.7 "写一个更有创意的标题"`。CLI 自行生成单条用户 `messages`；`max_tokens` 可用 `--param max_tokens=2048` 或既有快捷项 `--max-tokens 2048`（后者优先）。`--dry-run --json` 的 `data.request` 会展示实际将发送的顶层请求体。
 
 ### 图片、视频和音频
 

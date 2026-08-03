@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,34 @@ func TestListModelsUsesConfiguredGatewayBaseAndBearerToken(t *testing.T) {
 	}
 	if len(models) != 0 {
 		t.Fatalf("models = %d, want 0", len(models))
+	}
+}
+
+func TestChatSendsOptionalSchemaParameters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["temperature"] != float64(0.7) {
+			t.Fatalf("temperature = %#v, want 0.7", payload["temperature"])
+		}
+		if payload["max_tokens"] != float64(2048) {
+			t.Fatalf("max_tokens = %#v, want 2048", payload["max_tokens"])
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	reply, err := NewWithBaseURL("secret", server.URL).Chat(
+		context.Background(), "model-1", "openai", []ChatMessage{{Role: "user", Content: "hello"}},
+		map[string]any{"max_tokens": 2048, "temperature": 0.7},
+	)
+	if err != nil || reply != "ok" {
+		t.Fatalf("Chat() = %q, %v", reply, err)
 	}
 }
 

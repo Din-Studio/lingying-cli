@@ -195,19 +195,18 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
-func (c *Client) Chat(ctx context.Context, modelID string, apiFormat string, messages []ChatMessage, maxTokens int) (string, error) {
+func (c *Client) Chat(ctx context.Context, modelID string, apiFormat string, messages []ChatMessage, params map[string]any) (string, error) {
 	endpoint := c.gateway("/v1/chat/completions")
 	if apiFormat == "anthropic" {
 		endpoint = c.gateway("/v1/messages")
 	}
 
-	payload := map[string]any{
-		"model":    modelID,
-		"messages": messages,
+	payload := make(map[string]any, len(params)+2)
+	for key, value := range params {
+		payload[key] = value
 	}
-	if maxTokens > 0 {
-		payload["max_tokens"] = maxTokens
-	}
+	payload["model"] = modelID
+	payload["messages"] = messages
 
 	respBody, err := c.doJSON(ctx, "POST", endpoint, payload)
 	if err != nil {

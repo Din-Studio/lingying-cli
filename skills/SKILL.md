@@ -35,6 +35,7 @@ API Key 模式只能传远程 URL，不能传本地路径。
 ly text "解释量子计算"                                          # 动态发现的默认模型
 ly text --model <model-id> "写一段 Go 代码"                       # 指定模型
 ly text --max-tokens 4096 "写一篇文章"                          # 控制输出长度
+ly text --param temperature=0.7 "写一个更有创意的标题"            # 动态 schema 字段
 ```
 
 未指定模型时，CLI 从本次 Gateway 动态发现结果中为目标类型选择一个稳定的默认模型。指定的 `--model` 或配置中的默认模型必须精确匹配 ID 或 display_name，CLI 不会自动换成其他模型。
@@ -89,7 +90,7 @@ Agent 工作流:
 1. 先 ly --json check 检查鉴权和可用模型
 2. ly --json model list 了解可选模型
 3. ly --json model info <精确-id> 查看参数 schema（`data.input_schema` 已是 JSON object；后续 `--model` 使用同一精确 ID）
-4. ly --json <命令> --dry-run 预览请求（不会上传文件或提交任务）
+4. ly --json <命令> --dry-run 预览请求（不会上传文件或提交任务；text 的 data.request 是实际顶层请求体）
 5. ly --json <命令> 执行
 6. 如果 ok=false，读 data.code 和 data.message；Gateway 的错误码（例如 INSUFFICIENT_BALANCE）直接处理，不要在 CLI 端扣费或重试；若有 data.task_id，用 ly --json task get <id> 恢复查询，不要重新提交
 

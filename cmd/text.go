@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -14,8 +15,9 @@ import (
 )
 
 var (
-	textModel     string
-	textMaxTokens int
+	textModel      string
+	textMaxTokens  int
+	textParamFlags []string
 )
 
 var textCmd = &cobra.Command{
@@ -25,7 +27,8 @@ var textCmd = &cobra.Command{
 
   ly text "解释量子计算"
   ly text --model <model-id> "写一段 Go 代码"
-  ly text --max-tokens 4096 "写一篇文章"`,
+  ly text --max-tokens 4096 "写一篇文章"
+  ly text --param temperature=0.7 "写一个更有创意的标题"`,
 	Args: cobra.MinimumNArgs(0),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		jsonMode := isJSON(cmd)
@@ -82,28 +85,30 @@ var textCmd = &cobra.Command{
 			}
 		}
 
+		messages := []client.ChatMessage{{Role: "user", Content: prompt}}
+		params, err := buildTextParams(textParamFlags, matched.InputSchema, textMaxTokens)
+		if err != nil {
+			return err
+		}
+
 		if dryRun {
+			request := map[string]any{"model": modelID, "messages": messages}
+			for key, value := range params {
+				request[key] = value
+			}
 			env := output.Envelope{OK: true, Data: map[string]any{
 				"model":   modelID,
-				"prompt":  prompt,
+				"request": request,
 				"dry_run": true,
 			}}
 			if jsonMode {
 				return output.JSON(env)
 			}
-			fmt.Printf("[dry-run] model=%s prompt=%s\n", modelID, prompt)
+			fmt.Printf("[dry-run] model=%s request=%v\n", modelID, request)
 			return nil
 		}
 
-		messages := []client.ChatMessage{{Role: "user", Content: prompt}}
-
-		// Default max_tokens to avoid validation errors
-		mt := textMaxTokens
-		if mt == 0 {
-			mt = 4096
-		}
-
-		reply, err := c.Chat(ctx, modelID, matched.APIFormat, messages, mt)
+		reply, err := c.Chat(ctx, modelID, matched.APIFormat, messages, params)
 		if err != nil {
 			env := output.Envelope{OK: false, Data: map[string]any{"message": err.Error()}}
 			if jsonMode {
@@ -128,6 +133,32 @@ var textCmd = &cobra.Command{
 func init() {
 	textCmd.Flags().StringVarP(&textModel, "model", "m", "", "模型 ID 或 display_name")
 	textCmd.Flags().IntVar(&textMaxTokens, "max-tokens", 0, "最大输出 token 数")
+	textCmd.Flags().StringArrayVar(&textParamFlags, "param", nil, "附加模型参数 key=value（可重复）")
+}
+
+// buildTextParams encodes dynamic top-level schema fields. --max-tokens is a
+// backwards-compatible shortcut and takes precedence when explicitly set.
+func buildTextParams(flags []string, schema json.RawMessage, maxTokens int) (map[string]any, error) {
+	params := map[string]any{}
+	for _, flag := range flags {
+		parts := strings.SplitN(flag, "=", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			return nil, fmt.Errorf("非法 --param %q，应为 key=value", flag)
+		}
+		if parts[0] == "messages" || parts[0] == "model" {
+			return nil, fmt.Errorf("--param %q 由 text 命令自身生成，不能覆盖", parts[0])
+		}
+		if err := applySchemaParam(params, parts[0], parts[1], schema); err != nil {
+			return nil, fmt.Errorf("非法 --param %q: %w", flag, err)
+		}
+	}
+	if maxTokens > 0 {
+		params["max_tokens"] = maxTokens
+	} else if _, exists := params["max_tokens"]; !exists {
+		// Anthropic schemas require this field but do not publish a default.
+		params["max_tokens"] = 4096
+	}
+	return params, nil
 }
 
 func selectTextModel(models []client.GatewayModel, requested string) (*client.GatewayModel, error) {
