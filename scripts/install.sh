@@ -189,7 +189,7 @@ if [ -z "$bin_url" ]; then
     GOBIN="$DEFAULT_INSTALL_DIR" go install "${REPO}@latest" 2>/dev/null || fail "go install 失败"
   else
     say "没有预编译包，也没有 Go 环境。"
-    say "请用 npm 安装: npm install -g @lingying/cli"
+    say "请用 npm 安装: npm install -g lingying-cli"
     say "或安装 Go 后重试: go install ${REPO}@latest"
     exit 1
   fi

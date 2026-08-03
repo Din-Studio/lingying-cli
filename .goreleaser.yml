@@ -1,10 +1,10 @@
 # goreleaser — cross-compile + GitHub Release + npm publish in one command.
 #
-#   git tag v0.1.0 && git push --tags
+#   git tag v0.1.1 && git push --tags
 #   goreleaser release --clean
 #
 # Requires: GITHUB_TOKEN env var with repo write permissions.
-# Requires: NPM_TOKEN env var for npm publish (optional — remove npm section if not needed).
+# npm is published manually after the GitHub Release assets are available.
 version: 2
 
 before:
@@ -57,9 +57,3 @@ release:
   github:
     owner: Din-Studio
     name: lingying-cli
-
-# ── npm publish ──
-# Uncomment when you have an npm token:
-# npm:
-#   - name: "@lingying/cli"
-#     token: "{{.Env.NPM_TOKEN}}"

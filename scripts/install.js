@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lingying. SPDX-License-Identifier: MIT
 // postinstall — downloads ly binary for the current platform.
 //
-//   npm install -g @lingying/cli    → downloads prebuilt binary from GitHub Releases
+//   npm install -g lingying-cli     → downloads prebuilt binary from GitHub Releases
 //   go install github.com/Din-Studio/lingying-cli@latest  → builds from source
 //   git clone && make install       → builds locally
 //
