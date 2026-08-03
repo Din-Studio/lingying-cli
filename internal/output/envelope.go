@@ -5,8 +5,15 @@ package output
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
+
+// ErrEmitted marks a structured JSON error that has already been written to
+// stdout. Callers should exit non-zero without printing it again.
+var ErrEmitted = errors.New("structured error already emitted")
+
+func IsEmittedError(err error) bool { return errors.Is(err, ErrEmitted) }
 
 type Envelope struct {
 	OK   bool  `json:"ok"`
@@ -44,5 +51,8 @@ func JSON(env Envelope) error {
 		return err
 	}
 	fmt.Println(string(b))
+	if !env.OK {
+		return ErrEmitted
+	}
 	return nil
 }

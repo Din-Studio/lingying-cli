@@ -57,6 +57,9 @@ func Resolve() Resolved {
 // ConfigPath returns the single user-editable credential configuration path.
 // Unix platforms use ~/.config/ly/config.json; Windows uses %APPDATA%\ly\config.json.
 func ConfigPath() string {
+	if configured := os.Getenv("LY_CONFIG_FILE"); configured != "" {
+		return configured
+	}
 	home, _ := os.UserHomeDir()
 	return configPathFor(home, os.Getenv("APPDATA"), runtime.GOOS)
 }
@@ -117,4 +120,20 @@ func StoreDefaultModel(id string) error {
 
 func GetDefaultModel() string {
 	return loadConfig().DefaultModel
+}
+
+func StoreOutputDir(path string) error {
+	cfg := loadConfig()
+	cfg.OutputDir = path
+	return saveConfig(cfg)
+}
+
+func GetOutputDir() string { return loadConfig().OutputDir }
+
+func ClearCredentials() error {
+	cfg := loadConfig()
+	cfg.APIKey = ""
+	cfg.AccessToken = ""
+	cfg.RefreshToken = ""
+	return saveConfig(cfg)
 }

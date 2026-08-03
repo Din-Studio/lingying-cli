@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -53,6 +55,33 @@ type Client struct {
 	baseURL        string
 	fileServiceURL string
 	http           *http.Client
+}
+
+type ErrorDetail struct {
+	Code      string
+	Message   string
+	RequestID string
+}
+
+type GatewayError struct {
+	Status int
+	ErrorDetail
+}
+
+func (e *GatewayError) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("%s: %s", e.Code, e.Message)
+	}
+	return fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
+}
+
+// ErrorDetails exposes only safe, user-actionable upstream error fields.
+func ErrorDetails(err error) ErrorDetail {
+	var gatewayErr *GatewayError
+	if errors.As(err, &gatewayErr) {
+		return gatewayErr.ErrorDetail
+	}
+	return ErrorDetail{Code: "command_error", Message: err.Error()}
 }
 
 func New(token string) *Client {
@@ -109,9 +138,40 @@ func (c *Client) doJSON(ctx context.Context, method, url string, body any) ([]by
 		return nil, fmt.Errorf("读取响应失败: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody[:min(len(respBody), 300)]))
+		return nil, parseGatewayError(resp.StatusCode, respBody)
 	}
 	return respBody, nil
+}
+
+func parseGatewayError(status int, body []byte) error {
+	var payload struct {
+		Code      string `json:"code"`
+		ErrorCode string `json:"error_code"`
+		Message   string `json:"message"`
+		RequestID string `json:"request_id"`
+		Error     struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	detail := ErrorDetail{Code: payload.ErrorCode, Message: payload.Message, RequestID: payload.RequestID}
+	if detail.Code == "" {
+		detail.Code = payload.Code
+	}
+	if detail.Code == "" {
+		detail.Code = payload.Error.Code
+	}
+	if detail.Message == "" {
+		detail.Message = payload.Error.Message
+	}
+	if detail.Code == "" && status == http.StatusPaymentRequired {
+		detail.Code = "INSUFFICIENT_BALANCE"
+	}
+	if detail.Message == "" {
+		detail.Message = string(body[:min(len(body), 300)])
+	}
+	return &GatewayError{Status: status, ErrorDetail: detail}
 }
 
 // ── Model discovery ──
@@ -195,7 +255,7 @@ func (c *Client) SubmitTask(ctx context.Context, endpoint, modelID string, input
 	}
 	body, err := c.doJSON(ctx, "POST", endpoint, payload)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("提交任务: %w", err)
 	}
 	var resp struct {
 		Data struct {
@@ -224,6 +284,10 @@ func (c *Client) PollTask(ctx context.Context, taskID string, interval, maxSecon
 
 		body, err := c.doJSON(ctx, "GET", fmt.Sprintf("%s/v1/tasks/%s", c.baseURL, taskID), nil)
 		if err != nil {
+			var gatewayErr *GatewayError
+			if errors.As(err, &gatewayErr) {
+				return nil, gatewayErr
+			}
 			failures++
 			if failures >= 5 {
 				return nil, fmt.Errorf("连续 %d 次轮询失败", failures)
@@ -245,7 +309,10 @@ func (c *Client) PollTask(ctx context.Context, taskID string, interval, maxSecon
 			case "success":
 				return body, nil
 			case "failed":
-				return body, fmt.Errorf("%s: %s", resp.Data.ErrorCode, resp.Data.Error)
+				return body, &GatewayError{ErrorDetail: ErrorDetail{
+					Code:    resp.Data.ErrorCode,
+					Message: resp.Data.Error,
+				}}
 			}
 		}
 	}
@@ -287,6 +354,7 @@ func ExtractResultURLs(body []byte) ([]string, error) {
 		}
 	}
 	visit(value, "")
+	sort.Strings(urls)
 	return urls, nil
 }
 

@@ -21,6 +21,7 @@ func TestConfigPathForUsesPlatformConventions(t *testing.T) {
 func TestStoreAPIKeyWritesVersionedPrivateConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("LY_CONFIG_FILE", "")
 	if err := StoreAPIKey("secret-key"); err != nil {
 		t.Fatalf("StoreAPIKey() error = %v", err)
 	}
@@ -36,6 +37,36 @@ func TestStoreAPIKeyWritesVersionedPrivateConfig(t *testing.T) {
 	}
 	if filepath.Dir(ConfigPath()) != filepath.Join(home, ".config", "ly") {
 		t.Fatalf("config directory = %q", filepath.Dir(ConfigPath()))
+	}
+}
+
+func TestConfigPathHonorsExplicitOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-config.json")
+	t.Setenv("LY_CONFIG_FILE", path)
+	if got := ConfigPath(); got != path {
+		t.Fatalf("ConfigPath() = %q, want %q", got, path)
+	}
+}
+
+func TestClearCredentialsRetainsNonCredentialSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("LY_CONFIG_FILE", path)
+	t.Setenv("LY_ACCESS_TOKEN", "")
+	t.Setenv("LY_API_KEY", "")
+	if err := StoreOAuthToken("access-token", "refresh-token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := StoreOutputDir("/tmp/ly-output"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ClearCredentials(); err != nil {
+		t.Fatal(err)
+	}
+	if got := Resolve(); got.Value != "" {
+		t.Fatalf("Resolve() = %#v, want no credentials", got)
+	}
+	if got := GetOutputDir(); got != "/tmp/ly-output" {
+		t.Fatalf("GetOutputDir() = %q", got)
 	}
 }
 

@@ -99,6 +99,8 @@ ly model list
 | `ly auth set-key <key>` | 设置 API Key |
 | `ly auth show` | 查看当前鉴权状态 |
 | `ly auth path` | 显示本地配置文件路径 |
+| `ly auth logout` | 清除本地保存的凭据 |
+| `ly auth set-output-dir <path>` | 设置媒体结果默认输出目录 |
 | `ly check` | 检查连通性和可用模型 |
 
 ### 全局选项
@@ -108,6 +110,7 @@ ly model list
 | `--json` | JSON 输出（Agent 模式） |
 | `--dry-run` | 预览请求不执行 |
 | `-v, --verbose` | 详细输出 |
+| `--config <path>` | 覆盖默认的配置文件路径 |
 | `--version` | 显示版本 |
 
 ---
@@ -122,7 +125,7 @@ ly model list
 {"ok": false, "data": {"code": "task_incomplete", "message": "错误描述", "task_id": "xxx"}}
 ```
 
-Agent 应先读取 `ok`，失败时读取 `data.code` 和 `data.message`。异步任务中断或超时时保存 `data.task_id`，随后用 `ly --json task get <task-id>` 恢复查询。非交互环境推荐设置 `LY_ACCESS_TOKEN` 或 `LY_API_KEY`，避免把密钥放进命令参数。`skills/SKILL.md` 可随源码或 npm 包导入支持 Agent Skills 的客户端。
+Agent 应先读取 `ok`，失败时读取 `data.code` 和 `data.message`。Gateway 返回的错误码（如 `INSUFFICIENT_BALANCE`）会保留并以非零退出码结束，不由 CLI 计费或重试。异步任务可以使用 `--no-wait` 只获得 `task_id`，或在中断/超时后用 `ly --json task get <task-id>` 恢复查询。非交互环境推荐设置 `LY_ACCESS_TOKEN` 或 `LY_API_KEY`，避免把密钥放进命令参数。`skills/SKILL.md` 可随源码或 npm 包导入支持 Agent Skills 的客户端。
 
 ---
 
@@ -130,7 +133,7 @@ Agent 应先读取 `ok`，失败时读取 `data.code` 和 `data.message`。异�
 
 ### 本地配置
 
-认证信息写入固定的用户配置文件，便于查看、备份或手动修改：macOS/Linux 为 `~/.config/ly/config.json`，Windows 为 `%APPDATA%\\ly\\config.json`。可通过 `ly auth path` 获取当前实际路径。
+认证信息写入固定的用户配置文件，便于查看、备份或手动修改：macOS/Linux 为 `~/.config/ly/config.json`，Windows 为 `%APPDATA%\\ly\\config.json`。可通过 `ly auth path` 获取当前实际路径，或通过 `--config <path>` / `LY_CONFIG_FILE` 覆盖。`ly auth logout` 只清除本地凭据，会保留默认输出目录等非凭据配置。
 
 解析优先级为 `LY_ACCESS_TOKEN`、`LY_API_KEY`、本地配置文件；环境变量适合 CI 和一次性调用，会覆盖文件中的凭据。配置文件仅保存 OAuth Token、API Key、默认模型和输出目录，Unix 文件权限为仅当前用户可读写。
 

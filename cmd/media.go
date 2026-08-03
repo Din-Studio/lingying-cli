@@ -29,6 +29,7 @@ func runMedia(
 	inputFiles []string,
 	extraParams []string,
 	outputPath string,
+	noWait bool,
 ) error {
 	jsonMode := isJSON(cmd)
 	dryRun := isDryRun(cmd)
@@ -165,10 +166,22 @@ func runMedia(
 	}
 	taskID, err := c.SubmitTask(ctx, c.MediaEndpoint(entry.Endpoint), modelID, inputData)
 	if err != nil {
-		return fmt.Errorf("❌ 提交失败: %v", err)
+		return fmt.Errorf("提交失败: %w", err)
 	}
 	if !jsonMode {
 		fmt.Fprintln(cmd.ErrOrStderr(), " - 完成")
+	}
+	if noWait {
+		env := output.Envelope{OK: true, Data: map[string]any{
+			"task_id": taskID,
+			"status":  "pending",
+			"model":   matched.DisplayName,
+		}, Meta: &output.Meta{TaskID: taskID}}
+		if jsonMode {
+			return output.JSON(env)
+		}
+		fmt.Printf("TASK_ID: %s\n", taskID)
+		return nil
 	}
 
 	start := time.Now()
@@ -178,7 +191,12 @@ func runMedia(
 	taskBody, err := c.PollTask(ctx, taskID, 3, 1200)
 	if err != nil {
 		if jsonMode {
-			return output.JSON(output.Failure("task_incomplete", err.Error(), map[string]any{"task_id": taskID}))
+			detail := client.ErrorDetails(err)
+			extra := map[string]any{"task_id": taskID}
+			if detail.RequestID != "" {
+				extra["request_id"] = detail.RequestID
+			}
+			return output.JSON(output.Failure(detail.Code, detail.Message, extra))
 		}
 		return fmt.Errorf("❌ %v (task_id: %s)", err, taskID)
 	}
@@ -290,6 +308,7 @@ var (
 	imageParamFlags []string
 	imageOutPath    string
 	imagePromptFlag string
+	imageNoWait     bool
 )
 
 var imageCmd = &cobra.Command{
@@ -301,7 +320,7 @@ var imageCmd = &cobra.Command{
 			imagePromptFlag = p
 		}
 		return runMedia(cmd, map[string]bool{"image": true, "image_edit": true}, "image-2", imageModelFlag, imagePromptFlag,
-			imageInputFiles, imageParamFlags, imageOutPath)
+			imageInputFiles, imageParamFlags, imageOutPath, imageNoWait)
 	},
 }
 
@@ -313,6 +332,7 @@ var (
 	videoParamFlags []string
 	videoOutPath    string
 	videoPromptFlag string
+	videoNoWait     bool
 )
 
 var videoCmd = &cobra.Command{
@@ -324,7 +344,7 @@ var videoCmd = &cobra.Command{
 			videoPromptFlag = p
 		}
 		return runMedia(cmd, map[string]bool{"video": true, "video_edit": true}, "seedance2.0", videoModelFlag, videoPromptFlag,
-			videoInputFiles, videoParamFlags, videoOutPath)
+			videoInputFiles, videoParamFlags, videoOutPath, videoNoWait)
 	},
 }
 
@@ -336,6 +356,7 @@ var (
 	audioOutPath    string
 	audioPromptFlag string
 	audioInputFiles []string
+	audioNoWait     bool
 )
 
 var audioCmd = &cobra.Command{
@@ -347,7 +368,7 @@ var audioCmd = &cobra.Command{
 			audioPromptFlag = p
 		}
 		return runMedia(cmd, map[string]bool{"audio": true, "audio_edit": true}, "音频智能设计", audioModelFlag, audioPromptFlag,
-			audioInputFiles, audioParamFlags, audioOutPath)
+			audioInputFiles, audioParamFlags, audioOutPath, audioNoWait)
 	},
 }
 
@@ -384,6 +405,9 @@ func guessType(raw string) any {
 }
 
 func outputDir() string {
+	if configured := auth.GetOutputDir(); configured != "" {
+		return configured
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "ly-output")
 }
@@ -394,16 +418,19 @@ func init() {
 	imageCmd.Flags().StringArrayVar(&imageParamFlags, "param", nil, "附加参数 key=value (可重复)")
 	imageCmd.Flags().StringVarP(&imageOutPath, "output", "o", "", "输出文件路径")
 	imageCmd.Flags().StringVarP(&imagePromptFlag, "prompt", "p", "", "提示词")
+	imageCmd.Flags().BoolVar(&imageNoWait, "no-wait", false, "提交任务后立即返回 task_id")
 
 	videoCmd.Flags().StringVarP(&videoModelFlag, "model", "m", "", "模型 ID 或名称")
 	videoCmd.Flags().StringArrayVarP(&videoInputFiles, "image", "i", nil, "输入图片/视频 (可重复)")
 	videoCmd.Flags().StringArrayVar(&videoParamFlags, "param", nil, "附加参数 key=value (可重复)")
 	videoCmd.Flags().StringVarP(&videoOutPath, "output", "o", "", "输出文件路径")
 	videoCmd.Flags().StringVarP(&videoPromptFlag, "prompt", "p", "", "提示词")
+	videoCmd.Flags().BoolVar(&videoNoWait, "no-wait", false, "提交任务后立即返回 task_id")
 
 	audioCmd.Flags().StringVarP(&audioModelFlag, "model", "m", "", "模型 ID 或名称")
 	audioCmd.Flags().StringArrayVarP(&audioInputFiles, "audio", "i", nil, "输入音频 (可重复)")
 	audioCmd.Flags().StringArrayVar(&audioParamFlags, "param", nil, "附加参数 key=value (可重复)")
 	audioCmd.Flags().StringVarP(&audioOutPath, "output", "o", "", "输出文件路径")
 	audioCmd.Flags().StringVarP(&audioPromptFlag, "prompt", "p", "", "提示词")
+	audioCmd.Flags().BoolVar(&audioNoWait, "no-wait", false, "提交任务后立即返回 task_id")
 }

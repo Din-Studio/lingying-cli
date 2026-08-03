@@ -7,11 +7,13 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Din-Studio/lingying-cli/internal/client"
 	"github.com/Din-Studio/lingying-cli/internal/output"
 	"github.com/spf13/cobra"
 )
 
 var Version = "0.1.0"
+var configFile string
 
 var rootCmd = &cobra.Command{
 	Use:   "ly",
@@ -35,21 +37,35 @@ var rootCmd = &cobra.Command{
     ly auth show
 
   使用 ly <命令> --help 查看详细用法。`,
-	SilenceUsage:      true,
-	SilenceErrors:     true,
-	Version:           Version,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Version:       Version,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		if configFile != "" {
+			_ = os.Setenv("LY_CONFIG_FILE", configFile)
+		}
+	},
 	CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 }
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		if output.IsEmittedError(err) {
+			os.Exit(1)
+		}
 		if hasJSONFlag(os.Args[1:]) {
-			if jsonErr := output.JSON(output.Failure("command_error", err.Error(), nil)); jsonErr != nil {
+			detail := client.ErrorDetails(err)
+			extra := map[string]any{}
+			if detail.RequestID != "" {
+				extra["request_id"] = detail.RequestID
+			}
+			if jsonErr := output.JSON(output.Failure(detail.Code, detail.Message, extra)); jsonErr != nil && !output.IsEmittedError(jsonErr) {
 				fmt.Fprintln(os.Stderr, "Error:", jsonErr)
 			}
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
 	}
 }
 
@@ -66,6 +82,7 @@ func init() {
 	rootCmd.PersistentFlags().Bool("json", false, "JSON 输出")
 	rootCmd.PersistentFlags().Bool("dry-run", false, "预览不执行")
 	rootCmd.PersistentFlags().BoolP("verbose", "v", false, "详细输出")
+	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "配置文件路径（覆盖默认位置）")
 
 	rootCmd.AddCommand(checkCmd)
 	rootCmd.AddCommand(authCmd)
@@ -79,6 +96,8 @@ func init() {
 	authCmd.AddCommand(authSetKeyCmd)
 	authCmd.AddCommand(authShowCmd)
 	authCmd.AddCommand(authPathCmd)
+	authCmd.AddCommand(authLogoutCmd)
+	authCmd.AddCommand(authSetOutputDirCmd)
 
 	modelCmd.AddCommand(modelListCmd)
 	modelCmd.AddCommand(modelInfoCmd)

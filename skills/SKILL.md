@@ -91,9 +91,11 @@ Agent 工作流:
 3. ly --json model info <id> 查看参数 schema
 4. ly --json <命令> --dry-run 预览请求（不会上传文件或提交任务）
 5. ly --json <命令> 执行
-6. 如果 ok=false，读 data.code 和 data.message；若有 data.task_id，用 ly --json task get <id> 恢复查询，不要重新提交
+6. 如果 ok=false，读 data.code 和 data.message；Gateway 的错误码（例如 INSUFFICIENT_BALANCE）直接处理，不要在 CLI 端扣费或重试；若有 data.task_id，用 ly --json task get <id> 恢复查询，不要重新提交
 
 --dry-run 预览请求不执行，用于 Agent 验证参数后再提交。
+
+媒体任务可添加 `--no-wait`：CLI 只提交并返回 `data.task_id`，后续用 `ly --json task get <task_id>` 查询状态或结果。
 
 ## 参数类型
 

@@ -129,3 +129,36 @@ var authPathCmd = &cobra.Command{
 		return nil
 	},
 }
+
+var authLogoutCmd = &cobra.Command{
+	Use:   "logout",
+	Short: "清除本地保存的凭据",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := auth.ClearCredentials(); err != nil {
+			return err
+		}
+		env := output.Envelope{OK: true, Data: map[string]any{"message": "本地凭据已清除"}}
+		if isJSON(cmd) {
+			return output.JSON(env)
+		}
+		fmt.Println("✅ 本地凭据已清除")
+		return nil
+	},
+}
+
+var authSetOutputDirCmd = &cobra.Command{
+	Use:   "set-output-dir <path>",
+	Short: "设置默认输出目录",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := auth.StoreOutputDir(args[0]); err != nil {
+			return err
+		}
+		env := output.Envelope{OK: true, Data: map[string]any{"output_dir": args[0]}}
+		if isJSON(cmd) {
+			return output.JSON(env)
+		}
+		fmt.Printf("✅ 默认输出目录已设置为 %s\n", args[0])
+		return nil
+	},
+}
