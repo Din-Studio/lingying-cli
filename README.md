@@ -141,7 +141,15 @@ ly --json video --no-wait -p "镜头穿越云层"
 ly --json task get <task-id>
 ```
 
-任务轮询中断、超时或下载失败时，保留任务 ID 后运行 `ly task get <task-id>` 查询，不要盲目重新提交。
+`--no-wait` 每次只创建一个独立任务，但提交完成后可立刻继续提交下一条；CLI 不限制队列或并发，Gateway 决定是否接受、排队和执行。脚本调用时应保存每行 JSON 中的 `data.task_id`：
+
+```bash
+while IFS= read -r prompt; do
+  [ -n "$prompt" ] && ly --json image --no-wait -p "$prompt"
+done < prompts.txt
+```
+
+不要为同一个 `task_id` 重复提交。任务轮询中断、超时或下载失败时，保留任务 ID 后运行 `ly task get <task-id>` 查询。
 
 ## 鉴权与配置
 
@@ -197,8 +205,8 @@ LY_CONFIG_FILE=./ly-config.json ly auth show
 1. `ly --json check` 确认鉴权与模型可用性。
 2. `ly --json model list` / `ly --json model info <id>` 动态选择模型和字段。
 3. 使用 `ly --json <command> --dry-run` 预览请求；dry-run 不上传文件也不提交任务。
-4. 执行命令；媒体长任务可加 `--no-wait`。
-5. 读取 `ok`。失败时读取 `data.code`、`data.message` 及可选的 `data.request_id`；有 `data.task_id` 时用 `task get` 恢复。
+4. 对需要连续提交的媒体任务，为每条请求添加 `--no-wait`，解析并持久化各自的 `data.task_id`；CLI 完成提交后即可发起下一条，Gateway 负责队列与并发调度。
+5. 读取 `ok`。失败时读取 `data.code`、`data.message` 及可选的 `data.request_id`；有 `data.task_id` 时用 `task get` 恢复，不要对同一任务重复提交。
 
 Gateway 返回的结构化错误会被保留。例如 `INSUFFICIENT_BALANCE` 表示由 Gateway 统一计费后的上游结果，CLI 只透传并非零退出，不会自行扣费、猜测余额或重试。
 

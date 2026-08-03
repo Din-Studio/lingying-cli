@@ -95,7 +95,15 @@ Agent 工作流:
 
 --dry-run 预览请求不执行，用于 Agent 验证参数后再提交。
 
-媒体任务可添加 `--no-wait`：CLI 只提交并返回 `data.task_id`，后续用 `ly --json task get <task_id>` 查询状态或结果。
+媒体任务可添加 `--no-wait`：CLI 只提交并返回 `data.task_id`，后续用 `ly --json task get <task_id>` 查询状态或结果。每条 `--no-wait` 命令是一个独立任务；提交后可以立即提交下一条，记录每个 `data.task_id`，由 Gateway 决定是否接收、排队和并发执行。不要对同一 `task_id` 重复提交。
+
+批量提交示例（每行一条提示词）：
+
+```bash
+while IFS= read -r prompt; do
+  [ -n "$prompt" ] && ly --json image --no-wait -p "$prompt"
+done < prompts.txt
+```
 
 ## 参数类型
 
