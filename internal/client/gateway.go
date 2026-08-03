@@ -9,13 +9,16 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
 
 const (
-	GatewayBase = "https://console.echojoy.cn/gateway"
-	FileService = "https://file.echojoy.cn"
+	GatewayBase          = "https://console.echojoy.cn/gateway"
+	FileService          = "https://file.echojoy.cn"
+	MaxUploadBytes int64 = 500 * 1024 * 1024
 )
 
 // ── Model types from GET /v1/models ──
@@ -44,9 +47,10 @@ type ModelListResponse struct {
 // ── HTTP client ──
 
 type Client struct {
-	token   string
-	baseURL string
-	http    *http.Client
+	token          string
+	baseURL        string
+	fileServiceURL string
+	http           *http.Client
 }
 
 func New(token string) *Client {
@@ -56,10 +60,17 @@ func New(token string) *Client {
 // NewWithBaseURL creates a client for an alternate Gateway endpoint. It keeps
 // HTTP integration tests isolated and is also useful for self-hosted gateways.
 func NewWithBaseURL(token, baseURL string) *Client {
+	return NewWithEndpoints(token, baseURL, FileService)
+}
+
+// NewWithEndpoints creates a client with explicit Gateway and file-service
+// URLs. It exists for self-hosted deployments and HTTP integration tests.
+func NewWithEndpoints(token, baseURL, fileServiceURL string) *Client {
 	return &Client{
-		token:   token,
-		baseURL: strings.TrimRight(baseURL, "/"),
-		http:    &http.Client{Timeout: 120 * time.Second},
+		token:          token,
+		baseURL:        strings.TrimRight(baseURL, "/"),
+		fileServiceURL: strings.TrimRight(fileServiceURL, "/"),
+		http:           &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -290,37 +301,102 @@ func (c *Client) Download(ctx context.Context, url, path string) error {
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(resp.Body)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.partial")
 	if err != nil {
-		return err
+		return fmt.Errorf("创建下载临时文件失败: %w", err)
 	}
-	return os.WriteFile(path, data, 0644)
+	tmpPath := tmp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("下载写入失败: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("关闭下载临时文件失败: %w", err)
+	}
+	if err := replaceFile(tmpPath, path); err != nil {
+		return fmt.Errorf("保存下载结果失败: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 // ── File upload (OAuth only) ──
 
 func (c *Client) UploadFile(ctx context.Context, name, localPath string) (string, error) {
-	data, err := os.ReadFile(localPath)
+	file, err := os.Open(localPath)
 	if err != nil {
-		return "", fmt.Errorf("读取文件失败: %w", err)
+		return "", fmt.Errorf("打开上传文件失败: %w", err)
+	}
+	fileClosed := false
+	defer func() {
+		if !fileClosed {
+			_ = file.Close()
+		}
+	}()
+	if info, err := file.Stat(); err != nil {
+		return "", fmt.Errorf("读取上传文件信息失败: %w", err)
+	} else if info.Size() > MaxUploadBytes {
+		return "", fmt.Errorf("文件超过上传上限 %d MiB", MaxUploadBytes/(1024*1024))
 	}
 
-	var b bytes.Buffer
-	w := multipart.NewWriter(&b)
+	tmp, err := os.CreateTemp("", "ly-upload-*.multipart")
+	if err != nil {
+		return "", fmt.Errorf("创建上传临时文件失败: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	w := multipart.NewWriter(tmp)
 	fw, err := w.CreateFormFile("file", name)
 	if err != nil {
-		return "", err
+		_ = tmp.Close()
+		return "", fmt.Errorf("创建上传表单失败: %w", err)
 	}
-	fw.Write(data)
-	w.WriteField("name", name)
-	w.Close()
+	written, err := io.Copy(fw, io.LimitReader(file, MaxUploadBytes+1))
+	closeErr := file.Close()
+	fileClosed = true
+	if err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("读取上传文件失败: %w", err)
+	}
+	if closeErr != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("关闭上传文件失败: %w", closeErr)
+	}
+	if written > MaxUploadBytes {
+		_ = tmp.Close()
+		return "", fmt.Errorf("文件超过上传上限 %d MiB", MaxUploadBytes/(1024*1024))
+	}
+	if err := w.WriteField("name", name); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("写入上传表单失败: %w", err)
+	}
+	contentType := w.FormDataContentType()
+	if err := w.Close(); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("完成上传表单失败: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("关闭上传临时文件失败: %w", err)
+	}
+	body, err := os.Open(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("读取上传临时文件失败: %w", err)
+	}
+	defer body.Close()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", FileService+"/api/v1/files", &b)
+	req, err := http.NewRequestWithContext(ctx, "POST", c.fileServiceURL+"/api/v1/files", body)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Content-Type", contentType)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -330,7 +406,10 @@ func (c *Client) UploadFile(ctx context.Context, name, localPath string) (string
 
 	respData, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("读取上传响应失败: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("上传失败: HTTP %d: %s", resp.StatusCode, string(respData[:min(len(respData), 300)]))
 	}
 
 	var result struct {
@@ -344,10 +423,41 @@ func (c *Client) UploadFile(ctx context.Context, name, localPath string) (string
 	if err := json.Unmarshal(respData, &result); err != nil {
 		return "", fmt.Errorf("解析上传响应失败: %s", string(respData)[:200])
 	}
-	if result.Code != 0 {
+	if result.Code != 0 || result.Data.DownloadURL == "" {
 		return "", fmt.Errorf("上传失败: %s", result.Message)
 	}
 	return result.Data.DownloadURL, nil
+}
+
+func replaceFile(tempPath, destination string) error {
+	if runtime.GOOS != "windows" {
+		return os.Rename(tempPath, destination)
+	}
+	if _, err := os.Stat(destination); err != nil {
+		if os.IsNotExist(err) {
+			return os.Rename(tempPath, destination)
+		}
+		return err
+	}
+	backup, err := os.CreateTemp(filepath.Dir(destination), "."+filepath.Base(destination)+"-*.backup")
+	if err != nil {
+		return err
+	}
+	backupPath := backup.Name()
+	if err := backup.Close(); err != nil {
+		return err
+	}
+	if err := os.Remove(backupPath); err != nil {
+		return err
+	}
+	if err := os.Rename(destination, backupPath); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, destination); err != nil {
+		_ = os.Rename(backupPath, destination)
+		return err
+	}
+	return os.Remove(backupPath)
 }
 
 // ── Helpers ──
