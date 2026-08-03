@@ -1,5 +1,5 @@
 {
-  "name": "@lingying/cli",
+  "name": "lingying-cli",
   "version": "0.1.0",
   "description": "Lingying Gateway CLI — AI 模型网关命令行工具",
   "bin": {
@@ -20,6 +20,7 @@
   "license": "MIT",
   "files": [
     "scripts/install.js",
-    "scripts/run.js"
+    "scripts/run.js",
+    "skills/SKILL.md"
   ]
 }

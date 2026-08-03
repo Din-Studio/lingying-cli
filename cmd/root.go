@@ -5,7 +5,9 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/Din-Studio/lingying-cli/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -41,9 +43,23 @@ var rootCmd = &cobra.Command{
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		if hasJSONFlag(os.Args[1:]) {
+			if jsonErr := output.JSON(output.Failure("command_error", err.Error(), nil)); jsonErr != nil {
+				fmt.Fprintln(os.Stderr, "Error:", jsonErr)
+			}
+			os.Exit(1)
+		}
 		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
 	}
+}
+
+func hasJSONFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--json" || strings.HasPrefix(arg, "--json=") {
+			return true
+		}
+	}
+	return false
 }
 
 func init() {

@@ -3,7 +3,7 @@
 [![Go](https://img.shields.io/badge/Go-1.23%2B-blue.svg)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-AI 模型网关命令行工具。在终端中直接调用 36 个 AI 模型——文本对话、图片生成、视频生成、音频生成。
+AI 模型网关命令行工具。在终端中调用当前账号有权限使用的文本、图片、视频与音频模型。
 
 ```bash
 ly text "解释量子计算"
@@ -89,6 +89,7 @@ ly model list
 | `ly model list --type image` | 按类型过滤 |
 | `ly model info <id>` | 查看模型详情 + 参数 schema |
 | `ly model search <关键词>` | 搜索模型 |
+| `ly task get <task-id>` | 查询已提交的媒体任务 |
 
 ### 鉴权
 
@@ -112,15 +113,15 @@ ly model list
 
 ## Agent 集成
 
-所有命令支持 `--json` 输出统一信封：
+所有命令支持 `--json` 输出统一信封。该模式下 stdout 只包含一个 JSON 对象，进度信息写入 stderr：
 
 ```json
 {"ok": true, "data": {"reply": "..."}}
 {"ok": true, "data": {"files": ["/path/result.png"], "task_id": "xxx"}}
-{"ok": false, "data": {"message": "错误描述"}}
+{"ok": false, "data": {"code": "task_incomplete", "message": "错误描述", "task_id": "xxx"}}
 ```
 
-Agent 读取 `ok` 一个字段判断成功/失败。`ly` 的 SKILL.md 文件位于 `skills/SKILL.md`，可直接导入到支持 Agent Skills 的客户端中。
+Agent 应先读取 `ok`，失败时读取 `data.code` 和 `data.message`。异步任务中断或超时时保存 `data.task_id`，随后用 `ly --json task get <task-id>` 恢复查询。非交互环境推荐设置 `LY_ACCESS_TOKEN` 或 `LY_API_KEY`，避免把密钥放进命令参数。`skills/SKILL.md` 可随源码或 npm 包导入支持 Agent Skills 的客户端。
 
 ---
 

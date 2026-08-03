@@ -21,14 +21,14 @@ const (
 // ── Model types from GET /v1/models ──
 
 type GatewayModel struct {
-	ID           string              `json:"id"`
-	Object       string              `json:"object"`
-	ModelType    string              `json:"model_type"`
-	ModelID      string              `json:"model_id"`
-	DisplayName  string              `json:"display_name"`
-	APIFormat    string              `json:"api_format,omitempty"`
-	InputSchema  json.RawMessage     `json:"input_schema,omitempty"`
-	FeatureTypes map[string]Feature  `json:"feature_types,omitempty"`
+	ID           string             `json:"id"`
+	Object       string             `json:"object"`
+	ModelType    string             `json:"model_type"`
+	ModelID      string             `json:"model_id"`
+	DisplayName  string             `json:"display_name"`
+	APIFormat    string             `json:"api_format,omitempty"`
+	InputSchema  json.RawMessage    `json:"input_schema,omitempty"`
+	FeatureTypes map[string]Feature `json:"feature_types,omitempty"`
 }
 
 type Feature struct {
@@ -44,16 +44,28 @@ type ModelListResponse struct {
 // ── HTTP client ──
 
 type Client struct {
-	token string
-	http  *http.Client
+	token   string
+	baseURL string
+	http    *http.Client
 }
 
 func New(token string) *Client {
+	return NewWithBaseURL(token, GatewayBase)
+}
+
+// NewWithBaseURL creates a client for an alternate Gateway endpoint. It keeps
+// HTTP integration tests isolated and is also useful for self-hosted gateways.
+func NewWithBaseURL(token, baseURL string) *Client {
 	return &Client{
-		token: token,
-		http:  &http.Client{Timeout: 120 * time.Second},
+		token:   token,
+		baseURL: strings.TrimRight(baseURL, "/"),
+		http:    &http.Client{Timeout: 120 * time.Second},
 	}
 }
+
+func (c *Client) gateway(path string) string { return c.baseURL + path }
+
+func (c *Client) MediaEndpoint(path string) string { return c.gateway(path) }
 
 func (c *Client) doJSON(ctx context.Context, method, url string, body any) ([]byte, error) {
 	var r io.Reader
@@ -92,7 +104,7 @@ func (c *Client) doJSON(ctx context.Context, method, url string, body any) ([]by
 // ── Model discovery ──
 
 func (c *Client) ListModels(ctx context.Context) ([]GatewayModel, error) {
-	body, err := c.doJSON(ctx, "GET", GatewayBase+"/v1/models", nil)
+	body, err := c.doJSON(ctx, "GET", c.gateway("/v1/models"), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -111,9 +123,9 @@ type ChatMessage struct {
 }
 
 func (c *Client) Chat(ctx context.Context, modelID string, apiFormat string, messages []ChatMessage, maxTokens int) (string, error) {
-	endpoint := GatewayBase + "/v1/chat/completions"
+	endpoint := c.gateway("/v1/chat/completions")
 	if apiFormat == "anthropic" {
-		endpoint = GatewayBase + "/v1/messages"
+		endpoint = c.gateway("/v1/messages")
 	}
 
 	payload := map[string]any{
@@ -197,7 +209,7 @@ func (c *Client) PollTask(ctx context.Context, taskID string, interval, maxSecon
 		case <-time.After(time.Duration(interval) * time.Second):
 		}
 
-		body, err := c.doJSON(ctx, "GET", fmt.Sprintf("%s/v1/tasks/%s", GatewayBase, taskID), nil)
+		body, err := c.doJSON(ctx, "GET", fmt.Sprintf("%s/v1/tasks/%s", c.baseURL, taskID), nil)
 		if err != nil {
 			failures++
 			if failures >= 5 {
@@ -227,6 +239,44 @@ func (c *Client) PollTask(ctx context.Context, taskID string, interval, maxSecon
 	return nil, fmt.Errorf("任务超时 (%ds)", maxSeconds)
 }
 
+// GetTask returns the Gateway task envelope without submitting new work.
+func (c *Client) GetTask(ctx context.Context, taskID string) ([]byte, error) {
+	return c.doJSON(ctx, "GET", fmt.Sprintf("%s/v1/tasks/%s", c.baseURL, taskID), nil)
+}
+
+// ExtractResultURLs returns media URLs from a Gateway task envelope. Gateway
+// providers use slightly different result shapes, so URLs are collected from
+// conventional URL-named fields recursively and de-duplicated in encounter order.
+func ExtractResultURLs(body []byte) ([]string, error) {
+	var value any
+	if err := json.Unmarshal(body, &value); err != nil {
+		return nil, fmt.Errorf("解析任务结果失败: %w", err)
+	}
+	seen := make(map[string]bool)
+	var urls []string
+	var visit func(any, string)
+	visit = func(v any, key string) {
+		switch typed := v.(type) {
+		case map[string]any:
+			for childKey, child := range typed {
+				visit(child, childKey)
+			}
+		case []any:
+			for _, child := range typed {
+				visit(child, key)
+			}
+		case string:
+			if (key == "url" || key == "download_url" || key == "file_url") &&
+				(strings.HasPrefix(typed, "https://") || strings.HasPrefix(typed, "http://")) && !seen[typed] {
+				seen[typed] = true
+				urls = append(urls, typed)
+			}
+		}
+	}
+	visit(value, "")
+	return urls, nil
+}
+
 func (c *Client) Download(ctx context.Context, url, path string) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -237,6 +287,9 @@ func (c *Client) Download(ctx context.Context, url, path string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
+	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err

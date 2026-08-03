@@ -22,7 +22,7 @@ import (
 
 func runMedia(
 	cmd *cobra.Command,
-	modelType string,
+	modelTypes map[string]bool,
 	defaultModel string,
 	modelFlag string,
 	prompt string,
@@ -56,11 +56,6 @@ func runMedia(
 		return nil
 	}
 
-	entry, ok := registry.Lookup(modelType)
-	if !ok {
-		return fmt.Errorf("未知的模型类型: %s", modelType)
-	}
-
 	c := client.New(resolved.Value)
 	ctx := context.Background()
 	allModels, err := c.ListModels(ctx)
@@ -70,12 +65,12 @@ func runMedia(
 
 	var candidates []client.GatewayModel
 	for _, m := range allModels {
-		if m.ModelType == modelType {
+		if modelTypes[m.ModelType] {
 			candidates = append(candidates, m)
 		}
 	}
 	if len(candidates) == 0 {
-		return fmt.Errorf("没有找到 %s 类型的模型", modelType)
+		return fmt.Errorf("没有找到可用的目标类型模型")
 	}
 
 	// Pick model
@@ -83,22 +78,17 @@ func runMedia(
 	if modelID == "" {
 		modelID = defaultModel
 	}
-	var matched *client.GatewayModel
-	for i := range candidates {
-		m := &candidates[i]
-		if m.ID == modelID || strings.EqualFold(m.DisplayName, modelID) ||
-			strings.Contains(strings.ToLower(m.DisplayName), strings.ToLower(modelID)) ||
-			strings.Contains(strings.ToLower(m.ID), strings.ToLower(modelID)) {
-			matched = m
-			if m.ModelID != "" {
-				modelID = m.ModelID
-			}
-			break
-		}
+	matched, err := selectMediaModel(allModels, modelTypes, modelID)
+	if err != nil {
+		return err
 	}
-	if matched == nil {
-		matched = &candidates[0]
-		modelID = candidates[0].ModelID
+	modelID = matched.ModelID
+	if modelID == "" {
+		return fmt.Errorf("模型 %s 缺少 model_id", matched.ID)
+	}
+	entry, ok := registry.Lookup(matched.ModelType)
+	if !ok {
+		return fmt.Errorf("模型 %s 使用了不支持的类型 %s", matched.ID, matched.ModelType)
 	}
 
 	if prompt == "" {
@@ -115,40 +105,18 @@ func runMedia(
 	}
 
 	inputData := map[string]any{"prompt": prompt}
-
-	for _, fi := range inputFiles {
-		if strings.HasPrefix(fi, "http://") || strings.HasPrefix(fi, "https://") {
-			fieldName := guessFieldName(matched, modelType)
-			if _, exists := inputData[fieldName]; !exists {
-				inputData[fieldName] = []string{}
-			}
-			arr := inputData[fieldName].([]string)
-			inputData[fieldName] = append(arr, fi)
-		} else {
-			name := filepath.Base(fi)
-			fmt.Printf("上传 %s... ", name)
-			url, err := c.UploadFile(ctx, name, fi)
-			if err != nil {
-				return err
-			}
-			fmt.Println("完成")
-			fieldName := guessFieldName(matched, modelType)
-			if _, exists := inputData[fieldName]; !exists {
-				inputData[fieldName] = []string{}
-			}
-			arr := inputData[fieldName].([]string)
-			inputData[fieldName] = append(arr, url)
-		}
-	}
-
 	for _, p := range extraParams {
 		parts := strings.SplitN(p, "=", 2)
-		if len(parts) == 2 {
-			inputData[parts[0]] = guessType(parts[1])
+		if len(parts) != 2 || parts[0] == "" {
+			return fmt.Errorf("非法 --param %q，应为 key=value", p)
 		}
+		inputData[parts[0]] = guessType(parts[1])
 	}
 
 	if dryRun {
+		if len(inputFiles) > 0 {
+			inputData[guessFieldName(matched, matched.ModelType)] = inputFiles
+		}
 		env := output.Envelope{OK: true, Data: map[string]any{
 			"model_name": matched.DisplayName,
 			"model_id":   modelID,
@@ -163,33 +131,96 @@ func runMedia(
 		return nil
 	}
 
-	fmt.Printf("使用模型: %s\n提交任务", matched.DisplayName)
-	taskID, err := c.SubmitTask(ctx, client.GatewayBase+entry.Endpoint, modelID, inputData)
+	for _, fi := range inputFiles {
+		if strings.HasPrefix(fi, "http://") || strings.HasPrefix(fi, "https://") {
+			fieldName := guessFieldName(matched, matched.ModelType)
+			if _, exists := inputData[fieldName]; !exists {
+				inputData[fieldName] = []string{}
+			}
+			arr := inputData[fieldName].([]string)
+			inputData[fieldName] = append(arr, fi)
+		} else {
+			name := filepath.Base(fi)
+			if !jsonMode {
+				fmt.Fprintf(cmd.ErrOrStderr(), "上传 %s... ", name)
+			}
+			url, err := c.UploadFile(ctx, name, fi)
+			if err != nil {
+				return err
+			}
+			if !jsonMode {
+				fmt.Fprintln(cmd.ErrOrStderr(), "完成")
+			}
+			fieldName := guessFieldName(matched, matched.ModelType)
+			if _, exists := inputData[fieldName]; !exists {
+				inputData[fieldName] = []string{}
+			}
+			arr := inputData[fieldName].([]string)
+			inputData[fieldName] = append(arr, url)
+		}
+	}
+
+	if !jsonMode {
+		fmt.Fprintf(cmd.ErrOrStderr(), "使用模型: %s\n提交任务", matched.DisplayName)
+	}
+	taskID, err := c.SubmitTask(ctx, c.MediaEndpoint(entry.Endpoint), modelID, inputData)
 	if err != nil {
 		return fmt.Errorf("❌ 提交失败: %v", err)
 	}
-	fmt.Println(" - 完成")
+	if !jsonMode {
+		fmt.Fprintln(cmd.ErrOrStderr(), " - 完成")
+	}
 
 	start := time.Now()
-	fmt.Print("轮询中")
-	_, err = c.PollTask(ctx, taskID, 3, 1200)
+	if !jsonMode {
+		fmt.Fprint(cmd.ErrOrStderr(), "轮询中")
+	}
+	taskBody, err := c.PollTask(ctx, taskID, 3, 1200)
 	if err != nil {
-		return fmt.Errorf("❌ %v", err)
+		if jsonMode {
+			return output.JSON(output.Failure("task_incomplete", err.Error(), map[string]any{"task_id": taskID}))
+		}
+		return fmt.Errorf("❌ %v (task_id: %s)", err, taskID)
 	}
 	elapsed := int64(time.Since(start).Seconds())
-	fmt.Printf(" - 完成 (%ds)\n", elapsed)
+	if !jsonMode {
+		fmt.Fprintf(cmd.ErrOrStderr(), " - 完成 (%ds)\n", elapsed)
+	}
+
+	urls, err := client.ExtractResultURLs(taskBody)
+	if err != nil {
+		return err
+	}
+	if len(urls) == 0 {
+		if jsonMode {
+			return output.JSON(output.Failure("missing_result", "任务已完成但未返回可下载文件", map[string]any{"task_id": taskID}))
+		}
+		return fmt.Errorf("任务已完成但未返回可下载文件 (task_id: %s)", taskID)
+	}
 
 	outDir := outputDir()
-	os.MkdirAll(outDir, 0755)
-	outFile := filepath.Join(outDir, fmt.Sprintf("result.%s", entry.OutputExt))
-	if outputPath != "" {
-		outFile = outputPath
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return err
+	}
+	files := make([]string, 0, len(urls))
+	for i, url := range urls {
+		outFile := filepath.Join(outDir, fmt.Sprintf("result-%s-%d.%s", taskID, i+1, entry.OutputExt))
+		if outputPath != "" && i == 0 {
+			outFile = outputPath
+		}
+		if err := c.Download(ctx, url, outFile); err != nil {
+			if jsonMode {
+				return output.JSON(output.Failure("download_failed", err.Error(), map[string]any{"task_id": taskID, "files": files}))
+			}
+			return err
+		}
+		files = append(files, outFile)
 	}
 
 	env := output.Envelope{
 		OK: true,
 		Data: map[string]any{
-			"files":    []string{outFile},
+			"files":    files,
 			"task_id":  taskID,
 			"duration": elapsed,
 			"model":    matched.DisplayName,
@@ -199,7 +230,7 @@ func runMedia(
 	if jsonMode {
 		return output.JSON(env)
 	}
-	fmt.Printf("OUTPUT_FILE: %s\n", outFile)
+	fmt.Printf("OUTPUT_FILE: %s\n", files[0])
 	return nil
 }
 
@@ -207,6 +238,27 @@ func showModelList(candidates []client.GatewayModel) {
 	for i, m := range candidates {
 		fmt.Printf("  %2d. %-30s %s\n", i+1, m.ID, m.DisplayName)
 	}
+}
+
+func selectMediaModel(models []client.GatewayModel, eligible map[string]bool, requested string) (*client.GatewayModel, error) {
+	if requested == "" {
+		return nil, fmt.Errorf("未指定模型")
+	}
+	var found *client.GatewayModel
+	for i := range models {
+		m := &models[i]
+		if m.ID == requested || strings.EqualFold(m.DisplayName, requested) {
+			found = m
+			break
+		}
+	}
+	if found == nil {
+		return nil, fmt.Errorf("未找到模型: %s", requested)
+	}
+	if !eligible[found.ModelType] {
+		return nil, fmt.Errorf("模型 %s 的类型 %s 不适用于此命令", found.ID, found.ModelType)
+	}
+	return found, nil
 }
 
 func guessFieldName(matched *client.GatewayModel, modelType string) string {
@@ -248,7 +300,7 @@ var imageCmd = &cobra.Command{
 		if p != "" {
 			imagePromptFlag = p
 		}
-		return runMedia(cmd, "image", "image-2", imageModelFlag, imagePromptFlag,
+		return runMedia(cmd, map[string]bool{"image": true, "image_edit": true}, "image-2", imageModelFlag, imagePromptFlag,
 			imageInputFiles, imageParamFlags, imageOutPath)
 	},
 }
@@ -271,7 +323,7 @@ var videoCmd = &cobra.Command{
 		if p != "" {
 			videoPromptFlag = p
 		}
-		return runMedia(cmd, "video", "seedance2.0", videoModelFlag, videoPromptFlag,
+		return runMedia(cmd, map[string]bool{"video": true, "video_edit": true}, "seedance2.0", videoModelFlag, videoPromptFlag,
 			videoInputFiles, videoParamFlags, videoOutPath)
 	},
 }
@@ -283,6 +335,7 @@ var (
 	audioParamFlags []string
 	audioOutPath    string
 	audioPromptFlag string
+	audioInputFiles []string
 )
 
 var audioCmd = &cobra.Command{
@@ -293,8 +346,8 @@ var audioCmd = &cobra.Command{
 		if p != "" {
 			audioPromptFlag = p
 		}
-		return runMedia(cmd, "audio_edit", "音频智能设计", audioModelFlag, audioPromptFlag,
-			nil, audioParamFlags, audioOutPath)
+		return runMedia(cmd, map[string]bool{"audio": true, "audio_edit": true}, "音频智能设计", audioModelFlag, audioPromptFlag,
+			audioInputFiles, audioParamFlags, audioOutPath)
 	},
 }
 
@@ -349,6 +402,7 @@ func init() {
 	videoCmd.Flags().StringVarP(&videoPromptFlag, "prompt", "p", "", "提示词")
 
 	audioCmd.Flags().StringVarP(&audioModelFlag, "model", "m", "", "模型 ID 或名称")
+	audioCmd.Flags().StringArrayVarP(&audioInputFiles, "audio", "i", nil, "输入音频 (可重复)")
 	audioCmd.Flags().StringArrayVar(&audioParamFlags, "param", nil, "附加参数 key=value (可重复)")
 	audioCmd.Flags().StringVarP(&audioOutPath, "output", "o", "", "输出文件路径")
 	audioCmd.Flags().StringVarP(&audioPromptFlag, "prompt", "p", "", "提示词")

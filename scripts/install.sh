@@ -199,11 +199,3 @@ ensure_path "$DEFAULT_INSTALL_DIR"
 
 say "✅ ly 安装完成: $DEFAULT_INSTALL_DIR/$PROG"
 say "   执行 ly --help 开始使用"
-
-# ── Copy SKILL.md for Agent integration ──
-skill_src="$(dirname "$0")/../skills/SKILL.md"
-if [ -f "$skill_src" ]; then
-  mkdir -p "$SKILL_DIR"
-  cp "$skill_src" "$SKILL_DIR/SKILL.md"
-  say "📋 SKILL.md 已复制到 $SKILL_DIR/SKILL.md (供 Agent 使用)"
-fi

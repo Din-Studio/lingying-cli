@@ -14,8 +14,7 @@ import (
 )
 
 var (
-	textModel    string
-	textFile     string
+	textModel     string
 	textMaxTokens int
 )
 
@@ -26,7 +25,7 @@ var textCmd = &cobra.Command{
 
   ly text "解释量子计算"
   ly text --model claude-sonnet-4.6 "写一段 Go 代码"
-  ly text --model deepseek-v4-pro --file ./doc.pdf "总结这个文档"`,
+  ly text --max-tokens 4096 "写一篇文章"`,
 	Args: cobra.MinimumNArgs(0),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		jsonMode := isJSON(cmd)
@@ -62,21 +61,16 @@ var textCmd = &cobra.Command{
 			return err
 		}
 
-		var matched *client.GatewayModel
-		for i := range allModels {
-			if strings.EqualFold(allModels[i].ID, modelID) ||
-				strings.Contains(strings.ToLower(allModels[i].DisplayName), strings.ToLower(modelID)) ||
-				strings.Contains(strings.ToLower(allModels[i].ID), strings.ToLower(modelID)) {
-				matched = &allModels[i]
-				modelID = allModels[i].ID // use canonical ID
-				break
-			}
+		matched, err := selectTextModel(allModels, modelID)
+		if err != nil {
+			return err
 		}
+		modelID = matched.ID
 
 		// Get prompt
 		prompt := strings.Join(args, " ")
 
-		if prompt == "" && textFile == "" {
+		if prompt == "" {
 			// Interactive: ask for prompt
 			fmt.Printf("使用模型: %s\n", modelID)
 			fmt.Print("输入: ")
@@ -94,9 +88,8 @@ var textCmd = &cobra.Command{
 
 		if dryRun {
 			env := output.Envelope{OK: true, Data: map[string]any{
-				"model":  modelID,
-				"prompt": prompt,
-				"file":   textFile,
+				"model":   modelID,
+				"prompt":  prompt,
 				"dry_run": true,
 			}}
 			if jsonMode {
@@ -104,11 +97,6 @@ var textCmd = &cobra.Command{
 			}
 			fmt.Printf("[dry-run] model=%s prompt=%s\n", modelID, prompt)
 			return nil
-		}
-
-		apiFormat := ""
-		if matched != nil {
-			apiFormat = matched.APIFormat
 		}
 
 		messages := []client.ChatMessage{{Role: "user", Content: prompt}}
@@ -119,7 +107,7 @@ var textCmd = &cobra.Command{
 			mt = 4096
 		}
 
-		reply, err := c.Chat(ctx, modelID, apiFormat, messages, mt)
+		reply, err := c.Chat(ctx, modelID, matched.APIFormat, messages, mt)
 		if err != nil {
 			env := output.Envelope{OK: false, Data: map[string]any{"message": err.Error()}}
 			if jsonMode {
@@ -143,6 +131,18 @@ var textCmd = &cobra.Command{
 
 func init() {
 	textCmd.Flags().StringVarP(&textModel, "model", "m", "", "模型 ID 或 display_name")
-	textCmd.Flags().StringVarP(&textFile, "file", "f", "", "附加文件路径")
 	textCmd.Flags().IntVar(&textMaxTokens, "max-tokens", 0, "最大输出 token 数")
+}
+
+func selectTextModel(models []client.GatewayModel, requested string) (*client.GatewayModel, error) {
+	for i := range models {
+		m := &models[i]
+		if m.ID == requested || strings.EqualFold(m.DisplayName, requested) {
+			if m.ModelType != "text" {
+				return nil, fmt.Errorf("模型 %s 的类型 %s 不适用于文本命令", m.ID, m.ModelType)
+			}
+			return m, nil
+		}
+	}
+	return nil, fmt.Errorf("未找到文本模型: %s", requested)
 }
