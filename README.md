@@ -102,7 +102,7 @@ ly --json model list
 | `ly model search <keyword>` | 搜索模型 ID、名称或类型 |
 | `ly check` | 检查鉴权、Gateway 连通性和模型数量 |
 
-CLI 每次调用均从 Gateway 动态发现模型，不缓存或内置静态能力目录。调用前可先用 `model info` 查看模型当前的输入 schema；字段是否合法由 Gateway 返回最终结果。
+CLI 每次调用均从 Gateway 动态发现模型，不缓存或内置静态能力目录。未传 `--model` 时，CLI 从本次发现结果中为命令类型稳定选择一个可用模型；显式 `--model` 仍必须精确匹配，不会悔悔换模型。调用前可先用 `model info` 查看模型当前的输入 schema；字段是否合法由 Gateway 返回最终结果。
 
 ### 图片、视频和音频
 

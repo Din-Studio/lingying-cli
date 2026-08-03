@@ -24,7 +24,7 @@ var textCmd = &cobra.Command{
 	Long: `与 AI 文本模型对话。
 
   ly text "解释量子计算"
-  ly text --model claude-sonnet-4.6 "写一段 Go 代码"
+  ly text --model <model-id> "写一段 Go 代码"
   ly text --max-tokens 4096 "写一篇文章"`,
 	Args: cobra.MinimumNArgs(0),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -49,10 +49,6 @@ var textCmd = &cobra.Command{
 		if modelID == "" {
 			modelID = auth.GetDefaultModel()
 		}
-		if modelID == "" {
-			modelID = "claude-sonnet-4.6" // reasonable default
-		}
-
 		// Discover the model to get api_format
 		c := client.New(resolved.Value)
 		ctx := context.Background()
@@ -135,6 +131,9 @@ func init() {
 }
 
 func selectTextModel(models []client.GatewayModel, requested string) (*client.GatewayModel, error) {
+	if requested == "" {
+		return selectDynamicModel(models, map[string]bool{"text": true})
+	}
 	for i := range models {
 		m := &models[i]
 		if m.ID == requested || strings.EqualFold(m.DisplayName, requested) {

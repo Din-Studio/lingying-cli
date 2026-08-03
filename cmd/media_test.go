@@ -30,3 +30,33 @@ func TestSelectTextModelRejectsWrongModelType(t *testing.T) {
 		t.Fatalf("selectTextModel() error = %v, want type error", err)
 	}
 }
+
+func TestSelectTextModelChoosesStableDynamicDefault(t *testing.T) {
+	models := []client.GatewayModel{
+		{ID: "text-z", ModelType: "text", DisplayName: "Z"},
+		{ID: "image-1", ModelType: "image", DisplayName: "Image"},
+		{ID: "text-a", ModelType: "text", DisplayName: "A"},
+	}
+	model, err := selectTextModel(models, "")
+	if err != nil {
+		t.Fatalf("selectTextModel() error = %v", err)
+	}
+	if model.ID != "text-a" {
+		t.Fatalf("selected ID = %q, want text-a", model.ID)
+	}
+}
+
+func TestSelectMediaModelChoosesStableDynamicDefault(t *testing.T) {
+	models := []client.GatewayModel{
+		{ID: "image-z", ModelID: "model-z", ModelType: "image", DisplayName: "Z"},
+		{ID: "video-1", ModelID: "model-video", ModelType: "video", DisplayName: "Video"},
+		{ID: "image-a", ModelID: "model-a", ModelType: "image", DisplayName: "A"},
+	}
+	model, err := selectMediaModel(models, map[string]bool{"image": true}, "")
+	if err != nil {
+		t.Fatalf("selectMediaModel() error = %v", err)
+	}
+	if model.ID != "image-a" {
+		t.Fatalf("selected ID = %q, want image-a", model.ID)
+	}
+}

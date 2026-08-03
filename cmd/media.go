@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,7 +24,6 @@ import (
 func runMedia(
 	cmd *cobra.Command,
 	modelTypes map[string]bool,
-	defaultModel string,
 	modelFlag string,
 	prompt string,
 	inputFiles []string,
@@ -76,9 +76,6 @@ func runMedia(
 
 	// Pick model
 	modelID := modelFlag
-	if modelID == "" {
-		modelID = defaultModel
-	}
 	matched, err := selectMediaModel(allModels, modelTypes, modelID)
 	if err != nil {
 		return err
@@ -260,7 +257,7 @@ func showModelList(candidates []client.GatewayModel) {
 
 func selectMediaModel(models []client.GatewayModel, eligible map[string]bool, requested string) (*client.GatewayModel, error) {
 	if requested == "" {
-		return nil, fmt.Errorf("未指定模型")
+		return selectDynamicModel(models, eligible)
 	}
 	var found *client.GatewayModel
 	for i := range models {
@@ -277,6 +274,28 @@ func selectMediaModel(models []client.GatewayModel, eligible map[string]bool, re
 		return nil, fmt.Errorf("模型 %s 的类型 %s 不适用于此命令", found.ID, found.ModelType)
 	}
 	return found, nil
+}
+
+// selectDynamicModel chooses a stable default from the models returned by the
+// current Gateway discovery response. Explicit model selections never call this
+// function, so a user-provided ID cannot silently fall back to another model.
+func selectDynamicModel(models []client.GatewayModel, eligible map[string]bool) (*client.GatewayModel, error) {
+	candidates := make([]*client.GatewayModel, 0)
+	for i := range models {
+		if eligible[models[i].ModelType] {
+			candidates = append(candidates, &models[i])
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("没有找到可用的目标类型模型")
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].ID == candidates[j].ID {
+			return candidates[i].DisplayName < candidates[j].DisplayName
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+	return candidates[0], nil
 }
 
 func guessFieldName(matched *client.GatewayModel, modelType string) string {
@@ -319,7 +338,7 @@ var imageCmd = &cobra.Command{
 		if p != "" {
 			imagePromptFlag = p
 		}
-		return runMedia(cmd, map[string]bool{"image": true, "image_edit": true}, "image-2", imageModelFlag, imagePromptFlag,
+		return runMedia(cmd, map[string]bool{"image": true, "image_edit": true}, imageModelFlag, imagePromptFlag,
 			imageInputFiles, imageParamFlags, imageOutPath, imageNoWait)
 	},
 }
@@ -343,7 +362,7 @@ var videoCmd = &cobra.Command{
 		if p != "" {
 			videoPromptFlag = p
 		}
-		return runMedia(cmd, map[string]bool{"video": true, "video_edit": true}, "seedance2.0", videoModelFlag, videoPromptFlag,
+		return runMedia(cmd, map[string]bool{"video": true, "video_edit": true}, videoModelFlag, videoPromptFlag,
 			videoInputFiles, videoParamFlags, videoOutPath, videoNoWait)
 	},
 }
@@ -367,7 +386,7 @@ var audioCmd = &cobra.Command{
 		if p != "" {
 			audioPromptFlag = p
 		}
-		return runMedia(cmd, map[string]bool{"audio": true, "audio_edit": true}, "音频智能设计", audioModelFlag, audioPromptFlag,
+		return runMedia(cmd, map[string]bool{"audio": true, "audio_edit": true}, audioModelFlag, audioPromptFlag,
 			audioInputFiles, audioParamFlags, audioOutPath, audioNoWait)
 	},
 }

@@ -32,17 +32,17 @@ API Key 模式只能传远程 URL，不能传本地路径。
 ### 文本对话
 
 ```bash
-ly text "解释量子计算"                                          # 默认模型
-ly text --model claude-sonnet-4.6 "写一段 Go 代码"              # 指定模型
+ly text "解释量子计算"                                          # 动态发现的默认模型
+ly text --model <model-id> "写一段 Go 代码"                       # 指定模型
 ly text --max-tokens 4096 "写一篇文章"                          # 控制输出长度
 ```
 
-默认模型: claude-sonnet-4.6。每次调用会发现当前账号允许的模型；指定的模型必须精确匹配 ID 或 display_name，CLI 不会自动换成其他模型。
+未指定模型时，CLI 从本次 Gateway 动态发现结果中为目标类型选择一个稳定的默认模型。指定的 `--model` 或配置中的默认模型必须精确匹配 ID 或 display_name，CLI 不会自动换成其他模型。
 
 ### 图片生成
 
 ```bash
-ly image -p "赛博朋克猫"                                       # 默认模型 image-2
+ly image -p "赛博朋克猫"                                       # 动态发现的默认图片模型
 ly image --model nanobanana2 -p "cat"                          # 指定模型
 ly image -p "把背景换成海滩" -i ./photo.jpg                     # 图生图 (需 OAuth)
 ly image --model 抠图 -i ./photo.jpg                            # 图片编辑
@@ -52,7 +52,7 @@ ly image -p "cat" --param resolution=4K --param aspect_ratio=16:9  # 附加参�
 ### 视频生成
 
 ```bash
-ly video -p "cinematic flythrough"                             # 默认 seedance2.0
+ly video -p "cinematic flythrough"                             # 动态发现的默认视频模型
 ly video --model "seedance2.0 fast" -p "cat running"            # 指定模型
 ly video -p "dog" --param duration=10                            # 控制时长
 ```
@@ -80,7 +80,7 @@ ly model search <keyword>            # 搜索模型 (display_name 模糊匹配)
 所有命令加 --json 输出统一信封:
 
 ```json
-{"ok": true, "data": {"reply": "...", "model": "claude-sonnet-4.6"}}
+{"ok": true, "data": {"reply": "...", "model": "<discovered-model-id>"}}
 {"ok": true, "data": {"files": ["/path/result.png"], "task_id": "xxx", "duration": 42}}
 {"ok": false, "data": {"message": "未配置鉴权"}}
 ```
