@@ -20,6 +20,7 @@
   "license": "MIT",
   "files": [
     "scripts/install.js",
+    "scripts/install.ps1",
     "scripts/run.js",
     "skills/SKILL.md"
   ]

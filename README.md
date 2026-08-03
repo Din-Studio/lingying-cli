@@ -16,7 +16,7 @@ ly audio "一段播客开场白"
 
 ## 安装
 
-支持 macOS（Intel/Apple Silicon）、Linux（x64/arm64）和 Windows（x64/arm64，推荐 npm）。安装后运行 `ly --help` 验证命令可用。
+支持 macOS（Intel/Apple Silicon）、Linux（x64/arm64）和 Windows（x64/arm64）。安装后运行 `ly --help` 验证命令可用。
 
 ### curl：macOS、Linux 和 WSL
 
@@ -29,9 +29,20 @@ ly --help
 
 如脚本提示 PATH 尚未生效，请重新打开终端或按提示执行 `source`。脚本在没有预编译包时会回退到 `go install`。
 
-### npm：macOS、Linux 和 Windows
+### PowerShell：Windows 原生终端
 
-需要 Node.js 16 或更高版本。npm 安装包会下载并校验当前平台的二进制；Windows 请优先使用此方式。
+无需 Node.js 或 npm。安装器识别 x64/arm64，下载当前 Windows ZIP，强制校验 SHA-256 后安装到 `%LOCALAPPDATA%\ly\bin`，并写入当前用户的 PATH。可用 `LY_INSTALL_DIR` 覆盖目录，`LY_VERSION` 固定版本。
+
+```powershell
+irm https://raw.githubusercontent.com/Din-Studio/lingying-cli/main/scripts/install.ps1 | iex
+ly --help
+```
+
+重新打开 PowerShell 或 Windows Terminal 以获取更新后的 PATH。校验和、下载或解压失败时安装器会直接失败，不会安装未经校验的二进制。
+
+### npm：macOS、Linux 和 Windows（可选）
+
+需要 Node.js 16 或更高版本。npm 安装包会下载并校验当前平台的二进制；Windows 原生环境优先使用上方 PowerShell 安装器。
 
 ```bash
 npm install -g lingying-cli
