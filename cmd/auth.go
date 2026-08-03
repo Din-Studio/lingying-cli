@@ -105,14 +105,27 @@ var authShowCmd = &cobra.Command{
 			return nil
 		}
 		env := output.Envelope{OK: true, Data: map[string]any{
-			"auth_type": r.Type,
-			"source":    r.Source,
-			"has_upload": r.HasUpload(),
+			"auth_type":   r.Type,
+			"source":      r.Source,
+			"has_upload":  r.HasUpload(),
+			"config_path": auth.ConfigPath(),
 		}}
 		if jsonMode {
 			return output.JSON(env)
 		}
-		fmt.Printf("鉴权类型: %s\n来源: %s\n文件上传: %v\n", r.Display(), r.Source, r.HasUpload())
+		fmt.Printf("鉴权类型: %s\n来源: %s\n文件上传: %v\n配置文件: %s\n", r.Display(), r.Source, r.HasUpload(), auth.ConfigPath())
+		return nil
+	},
+}
+
+var authPathCmd = &cobra.Command{
+	Use:   "path",
+	Short: "显示配置文件路径",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if isJSON(cmd) {
+			return output.JSON(output.Envelope{OK: true, Data: map[string]any{"config_path": auth.ConfigPath()}})
+		}
+		fmt.Println(auth.ConfigPath())
 		return nil
 	},
 }

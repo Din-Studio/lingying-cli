@@ -98,6 +98,7 @@ ly model list
 | `ly auth login` | OAuth 浏览器登录（支持文件上传） |
 | `ly auth set-key <key>` | 设置 API Key |
 | `ly auth show` | 查看当前鉴权状态 |
+| `ly auth path` | 显示本地配置文件路径 |
 | `ly check` | 检查连通性和可用模型 |
 
 ### 全局选项
@@ -126,6 +127,12 @@ Agent 应先读取 `ok`，失败时读取 `data.code` 和 `data.message`。异�
 ---
 
 ## 鉴权模式
+
+### 本地配置
+
+认证信息写入固定的用户配置文件，便于查看、备份或手动修改：macOS/Linux 为 `~/.config/ly/config.json`，Windows 为 `%APPDATA%\\ly\\config.json`。可通过 `ly auth path` 获取当前实际路径。
+
+解析优先级为 `LY_ACCESS_TOKEN`、`LY_API_KEY`、本地配置文件；环境变量适合 CI 和一次性调用，会覆盖文件中的凭据。配置文件仅保存 OAuth Token、API Key、默认模型和输出目录，Unix 文件权限为仅当前用户可读写。
 
 | | OAuth | API Key |
 |------|--------|----------|

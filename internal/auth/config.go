@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 type Resolved struct {
@@ -28,6 +29,7 @@ func (r Resolved) HasUpload() bool {
 }
 
 type Config struct {
+	Version      int    `json:"version"`
 	APIKey       string `json:"api_key,omitempty"`
 	AccessToken  string `json:"access_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
@@ -52,13 +54,25 @@ func Resolve() Resolved {
 	return Resolved{}
 }
 
-func configPath() string {
+// ConfigPath returns the single user-editable credential configuration path.
+// Unix platforms use ~/.config/ly/config.json; Windows uses %APPDATA%\ly\config.json.
+func ConfigPath() string {
 	home, _ := os.UserHomeDir()
+	return configPathFor(home, os.Getenv("APPDATA"), runtime.GOOS)
+}
+
+func configPathFor(home, appData, platform string) string {
+	if platform == "windows" {
+		if appData == "" {
+			appData = home + `\AppData\Roaming`
+		}
+		return appData + `\ly\config.json`
+	}
 	return filepath.Join(home, ".config", "ly", "config.json")
 }
 
 func loadConfig() Config {
-	data, err := os.ReadFile(configPath())
+	data, err := os.ReadFile(ConfigPath())
 	if err != nil {
 		return Config{}
 	}
@@ -68,8 +82,13 @@ func loadConfig() Config {
 }
 
 func saveConfig(cfg Config) error {
-	p := configPath()
-	os.MkdirAll(filepath.Dir(p), 0700)
+	p := ConfigPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		return err
+	}
+	if cfg.Version == 0 {
+		cfg.Version = 1
+	}
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err

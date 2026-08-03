@@ -78,6 +78,7 @@ func init() {
 	authCmd.AddCommand(authLoginCmd)
 	authCmd.AddCommand(authSetKeyCmd)
 	authCmd.AddCommand(authShowCmd)
+	authCmd.AddCommand(authPathCmd)
 
 	modelCmd.AddCommand(modelListCmd)
 	modelCmd.AddCommand(modelInfoCmd)

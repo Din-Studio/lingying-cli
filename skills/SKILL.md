@@ -19,9 +19,10 @@ metadata:
 | `ly auth login` | OAuth 浏览器登录 (支持文件上传) |
 | `ly auth set-key <key>` | API Key (不支持本地文件上传) |
 | `ly auth show` | 查看当前鉴权状态 |
+| `ly auth path` | 显示本地配置文件路径 |
 | `ly check` | 检查连通性和可用模型 |
 
-无人值守调用优先设置 `LY_ACCESS_TOKEN`（OAuth）或 `LY_API_KEY`，不要把密钥放到 `ly auth set-key` 的命令行参数中。
+无人值守调用优先设置 `LY_ACCESS_TOKEN`（OAuth）或 `LY_API_KEY`，不要把密钥放到 `ly auth set-key` 的命令行参数中。持久化配置位于 macOS/Linux `~/.config/ly/config.json` 或 Windows `%APPDATA%\\ly\\config.json`；运行 `ly auth path` 可查看实际位置。
 
 OAuth 模式支持本地文件上传 (自动上传到 file.echojoy.cn 并拿到 download_url)。
 API Key 模式只能传远程 URL，不能传本地路径。
