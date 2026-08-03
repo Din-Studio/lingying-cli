@@ -88,7 +88,7 @@ ly model search <keyword>            # 搜索模型 (display_name 模糊匹配)
 Agent 工作流:
 1. 先 ly --json check 检查鉴权和可用模型
 2. ly --json model list 了解可选模型
-3. ly --json model info <id> 查看参数 schema
+3. ly --json model info <精确-id> 查看参数 schema（`data.input_schema` 已是 JSON object；后续 `--model` 使用同一精确 ID）
 4. ly --json <命令> --dry-run 预览请求（不会上传文件或提交任务）
 5. ly --json <命令> 执行
 6. 如果 ok=false，读 data.code 和 data.message；Gateway 的错误码（例如 INSUFFICIENT_BALANCE）直接处理，不要在 CLI 端扣费或重试；若有 data.task_id，用 ly --json task get <id> 恢复查询，不要重新提交
@@ -108,13 +108,15 @@ done < prompts.txt
 ## 参数类型
 
 
-`--param` 对本次模型 schema 中的顶层字段按类型编码：
+`--param` 对本次模型 schema 编码：
 - string 保持原文（例如 `9:16`、`1K`）
 - integer / number 使用严格完整数值解析
 - boolean 支持 true/false、yes/no、1/0
-- 未知或复杂字段保持 string，由 Gateway 校验
+- 嵌套 object 使用点路径，例如 `--param metadata.quality=high`
+- object / array 整体值使用 JSON，例如 `--param 'metadata={"quality":"high"}'`、`--param 'images=["https://example.com/a.png"]'`
+- 未知顶层字段保持 string，由 Gateway 校验；未声明的嵌套路径会在 CLI 端拒绝，避免生成字面量 `metadata.quality` 这类无效键
 
-对 Gateway schema 中“必填且有 default”的缺失字段，CLI 会自动补齐；`--param` 显式传入的值优先。其他非法参数会被 Gateway 拒绝，Agent 读错误后修正重试。CLI 不做完整 schema 校验。
+对 Gateway schema 中“必填且有 default”的缺失字段，CLI 会自动补齐；`--param` 显式传入的值优先。其他非法参数会被 Gateway 拒绝，Agent 读错误后修正重试。CLI 不做完整 schema 校验。位置提示词里的 `=` 是普通文本，额外字段必须显式使用 `--param`。
 
 ## 错误处理
 

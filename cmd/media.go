@@ -110,13 +110,17 @@ func runMedia(
 		if len(parts) != 2 || parts[0] == "" {
 			return fmt.Errorf("非法 --param %q，应为 key=value", p)
 		}
-		inputData[parts[0]] = coerceParamValue(parts[0], parts[1], matched.InputSchema)
+		if err := applySchemaParam(inputData, parts[0], parts[1], matched.InputSchema); err != nil {
+			return fmt.Errorf("非法 --param %q: %w", p, err)
+		}
 	}
 	applyRequiredSchemaDefaults(inputData, matched.InputSchema)
 
 	if dryRun {
-		if len(inputFiles) > 0 {
-			inputData[guessFieldName(matched, matched.ModelType)] = inputFiles
+		for _, file := range inputFiles {
+			if err := appendInputURL(inputData, inputFieldForFile(matched, matched.ModelType, file), file); err != nil {
+				return err
+			}
 		}
 		env := output.Envelope{OK: true, Data: map[string]any{
 			"model_name": matched.DisplayName,
@@ -133,13 +137,11 @@ func runMedia(
 	}
 
 	for _, fi := range inputFiles {
+		fieldName := inputFieldForFile(matched, matched.ModelType, fi)
 		if strings.HasPrefix(fi, "http://") || strings.HasPrefix(fi, "https://") {
-			fieldName := guessFieldName(matched, matched.ModelType)
-			if _, exists := inputData[fieldName]; !exists {
-				inputData[fieldName] = []string{}
+			if err := appendInputURL(inputData, fieldName, fi); err != nil {
+				return err
 			}
-			arr := inputData[fieldName].([]string)
-			inputData[fieldName] = append(arr, fi)
 		} else {
 			name := filepath.Base(fi)
 			if !jsonMode {
@@ -152,12 +154,9 @@ func runMedia(
 			if !jsonMode {
 				fmt.Fprintln(cmd.ErrOrStderr(), "完成")
 			}
-			fieldName := guessFieldName(matched, matched.ModelType)
-			if _, exists := inputData[fieldName]; !exists {
-				inputData[fieldName] = []string{}
+			if err := appendInputURL(inputData, fieldName, url); err != nil {
+				return err
 			}
-			arr := inputData[fieldName].([]string)
-			inputData[fieldName] = append(arr, url)
 		}
 	}
 
@@ -302,15 +301,6 @@ func selectDynamicModel(models []client.GatewayModel, eligible map[string]bool) 
 }
 
 func guessFieldName(matched *client.GatewayModel, modelType string) string {
-	if matched != nil && matched.FeatureTypes != nil {
-		for _, feat := range matched.FeatureTypes {
-			for _, mf := range feat.MatchFields {
-				if mf == "images" || mf == "videos" || mf == "audios" {
-					return mf
-				}
-			}
-		}
-	}
 	switch modelType {
 	case "image", "image_edit":
 		return "images"
@@ -320,6 +310,60 @@ func guessFieldName(matched *client.GatewayModel, modelType string) string {
 		return "audios"
 	}
 	return "images"
+}
+
+// inputFieldForFile maps a local or remote media input to a field exposed by
+// the selected model. This avoids depending on FeatureTypes map iteration,
+// which is deliberately non-deterministic in Go.
+func inputFieldForFile(matched *client.GatewayModel, modelType, input string) string {
+	wanted := mediaFieldForPath(input)
+	if hasInputField(matched, wanted) {
+		return wanted
+	}
+	return guessFieldName(matched, modelType)
+}
+
+func mediaFieldForPath(input string) string {
+	path := strings.ToLower(strings.SplitN(input, "?", 2)[0])
+	switch filepath.Ext(path) {
+	case ".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".mpeg", ".mpg":
+		return "videos"
+	case ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus":
+		return "audios"
+	default:
+		return "images"
+	}
+}
+
+func hasInputField(matched *client.GatewayModel, wanted string) bool {
+	if matched == nil {
+		return false
+	}
+	for _, feature := range matched.FeatureTypes {
+		for _, field := range feature.MatchFields {
+			if field == wanted {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appendInputURL(input map[string]any, fieldName, value string) error {
+	current, exists := input[fieldName]
+	if !exists {
+		input[fieldName] = []any{value}
+		return nil
+	}
+	switch values := current.(type) {
+	case []any:
+		input[fieldName] = append(values, value)
+	case []string:
+		input[fieldName] = append(values, value)
+	default:
+		return fmt.Errorf("输入字段 %q 已由 --param 设置为非数组，无法追加文件", fieldName)
+	}
+	return nil
 }
 
 // ── Image ──
@@ -337,7 +381,7 @@ var imageCmd = &cobra.Command{
 	Use:   "image",
 	Short: "图片生成和编辑",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p := getPromptFromArgs(args, &imageParamFlags)
+		p := getPromptFromArgs(args)
 		if p != "" {
 			imagePromptFlag = p
 		}
@@ -361,7 +405,7 @@ var videoCmd = &cobra.Command{
 	Use:   "video",
 	Short: "视频生成和编辑",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p := getPromptFromArgs(args, &videoParamFlags)
+		p := getPromptFromArgs(args)
 		if p != "" {
 			videoPromptFlag = p
 		}
@@ -385,7 +429,7 @@ var audioCmd = &cobra.Command{
 	Use:   "audio",
 	Short: "音频生成",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p := getPromptFromArgs(args, &audioParamFlags)
+		p := getPromptFromArgs(args)
 		if p != "" {
 			audioPromptFlag = p
 		}
@@ -396,23 +440,23 @@ var audioCmd = &cobra.Command{
 
 // ── Helpers ──
 
-func getPromptFromArgs(args []string, params *[]string) string {
-	var parts []string
-	for _, a := range args {
-		if strings.Contains(a, "=") {
-			*params = append(*params, a)
-		} else {
-			parts = append(parts, a)
-		}
-	}
-	return strings.Join(parts, " ")
+func getPromptFromArgs(args []string) string {
+	return strings.Join(args, " ")
 }
 
 // coerceParamValue performs the minimal conversion needed to encode a CLI
 // parameter according to the current Gateway schema. Unknown and complex
 // fields remain strings so the Gateway can validate them authoritatively.
 func coerceParamValue(key, raw string, schema json.RawMessage) any {
-	switch inputSchemaPropertyType(key, schema) {
+	property, exists := inputSchemaProperty(key, schema)
+	if !exists {
+		return raw
+	}
+	return coerceSchemaValue(raw, property)
+}
+
+func coerceSchemaValue(raw string, property json.RawMessage) any {
+	switch schemaNodeType(property) {
 	case "boolean":
 		switch strings.ToLower(raw) {
 		case "true", "yes", "1":
@@ -433,37 +477,125 @@ func coerceParamValue(key, raw string, schema json.RawMessage) any {
 }
 
 func inputSchemaPropertyType(key string, schema json.RawMessage) string {
-	var definition struct {
-		Properties map[string]struct {
-			Type json.RawMessage `json:"type"`
-		} `json:"properties"`
-	}
-	if json.Unmarshal(schema, &definition) != nil {
-		return ""
-	}
-	property, exists := definition.Properties[key]
+	property, exists := inputSchemaProperty(key, schema)
 	if !exists {
 		return ""
 	}
+	return schemaNodeType(property)
+}
+
+func inputSchemaProperty(key string, schema json.RawMessage) (json.RawMessage, bool) {
+	var definition struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if json.Unmarshal(schema, &definition) != nil {
+		return nil, false
+	}
+	property, exists := definition.Properties[key]
+	return property, exists
+}
+
+func schemaNodeType(property json.RawMessage) string {
+	var definition struct {
+		Type json.RawMessage `json:"type"`
+	}
+	if json.Unmarshal(property, &definition) != nil {
+		return ""
+	}
 	var single string
-	if json.Unmarshal(property.Type, &single) == nil {
+	if json.Unmarshal(definition.Type, &single) == nil {
 		return single
 	}
 	var multiple []string
-	if json.Unmarshal(property.Type, &multiple) != nil {
+	if json.Unmarshal(definition.Type, &multiple) != nil {
 		return ""
 	}
-	for _, candidate := range multiple {
-		if candidate == "string" {
-			return "string"
-		}
-	}
-	for _, candidate := range multiple {
-		if candidate == "boolean" || candidate == "integer" || candidate == "number" {
-			return candidate
+	for _, expected := range []string{"object", "array", "string", "boolean", "integer", "number"} {
+		for _, candidate := range multiple {
+			if candidate == expected {
+				return candidate
+			}
 		}
 	}
 	return ""
+}
+
+// applySchemaParam serializes a --param value according to the discovered
+// input schema. Dot paths address nested object fields. Object and array values
+// use JSON so their structure is preserved rather than being sent as strings.
+// This is encoding only: validation of value ranges and unknown top-level
+// fields remains the Gateway's responsibility.
+func applySchemaParam(input map[string]any, path, raw string, schema json.RawMessage) error {
+	property, found := schemaPropertyAtPath(path, schema)
+	if !found {
+		if !strings.Contains(path, ".") {
+			input[path] = raw
+			return nil
+		}
+		return fmt.Errorf("嵌套字段 %q 未在模型 input_schema 中声明", path)
+	}
+	value, err := decodeSchemaParamValue(raw, property)
+	if err != nil {
+		return err
+	}
+	return setNestedSchemaValue(input, strings.Split(path, "."), value)
+}
+
+func schemaPropertyAtPath(path string, schema json.RawMessage) (json.RawMessage, bool) {
+	current := schema
+	for _, part := range strings.Split(path, ".") {
+		var definition struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if json.Unmarshal(current, &definition) != nil {
+			return nil, false
+		}
+		next, exists := definition.Properties[part]
+		if !exists {
+			return nil, false
+		}
+		current = next
+	}
+	return current, true
+}
+
+func decodeSchemaParamValue(raw string, property json.RawMessage) (any, error) {
+	switch schemaNodeType(property) {
+	case "object":
+		var value map[string]any
+		if err := json.Unmarshal([]byte(raw), &value); err != nil || value == nil {
+			return nil, fmt.Errorf("对象字段必须使用 JSON 对象，例如 --param 'metadata={\"quality\":\"high\"}'")
+		}
+		return value, nil
+	case "array":
+		var value []any
+		if err := json.Unmarshal([]byte(raw), &value); err != nil || value == nil {
+			return nil, fmt.Errorf("数组字段必须使用 JSON 数组，例如 --param 'images=[\"https://example.com/image.png\"]'")
+		}
+		return value, nil
+	default:
+		return coerceSchemaValue(raw, property), nil
+	}
+}
+
+func setNestedSchemaValue(input map[string]any, path []string, value any) error {
+	current := input
+	for _, part := range path[:len(path)-1] {
+		existing, exists := current[part]
+		if !exists {
+			next := map[string]any{}
+			current[part] = next
+			current = next
+			continue
+		}
+		next, ok := existing.(map[string]any)
+		if !ok {
+			return fmt.Errorf("字段 %q 不是对象，无法设置嵌套参数", part)
+		}
+		current = next
+	}
+	current[path[len(path)-1]] = value
+	return nil
 }
 
 // applyRequiredSchemaDefaults copies only required fields with an explicit

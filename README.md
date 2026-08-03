@@ -104,6 +104,8 @@ ly --json model list
 
 CLI 每次调用均从 Gateway 动态发现模型，不缓存或内置静态能力目录。未传 `--model` 时，CLI 从本次发现结果中为命令类型稳定选择一个可用模型；显式 `--model` 仍必须精确匹配，不会悔悔换模型。调用前可先用 `model info` 查看模型当前的输入 schema；字段是否合法由 Gateway 返回最终结果。
 
+对 Agent，`ly --json model info <精确-id>` 的 `data.input_schema` 是 JSON 对象（不是需要再次解析的字符串），且精确 ID 优先于模糊搜索结果；因此应使用同一个精确 ID 传给后续命令的 `--model`。
+
 ### 图片、视频和音频
 
 | 命令 | 说明 |
@@ -117,9 +119,20 @@ CLI 每次调用均从 Gateway 动态发现模型，不缓存或内置静态能�
 | `ly <image\|video\|audio> --param key=value` | 传递额外模型字段，可重复使用 |
 | `ly <image\|video\|audio> --output ./result.png` | 指定第一个结果文件的保存位置 |
 
-`--param` 按本次模型 `input_schema` 的顶层字段类型编码：字符串始终保留原文（例如 `9:16`、`1K`），整数和数值使用严格完整解析，布尔字段接受 `true/false`、`yes/no`、`1/0`。未知或复杂字段保持字符串，由 Gateway 校验。CLI 会补齐缺失的“必填且带 default”字段，用户传入的值优先；不做完整本地 schema 校验。
+`--param` 按本次模型 `input_schema` 编码：字符串始终保留原文（例如 `9:16`、`1K`），整数和数值使用严格完整解析，布尔字段接受 `true/false`、`yes/no`、`1/0`。嵌套对象可用点路径传递，数组和整个对象使用 JSON：
 
-输入既可以是本地路径，也可以是 `http://` 或 `https://` URL。URL 输入可使用 OAuth 或 API Key；本地输入需要 OAuth，CLI 会通过 `file.echojoy.cn` 的预签名上传链路上传。单个本地文件上限为 **1 GiB**。
+```bash
+# image-2 的 metadata 是 object；两种写法产生等价的 object 请求体
+ly image --model image-2 -p "赛博朋克猫" --param metadata.quality=high
+ly image --model image-2 -p "赛博朋克猫" --param 'metadata={"quality":"high","output_format":"webp"}'
+
+# 需要自行传远程数组字段时使用 JSON 数组；也可与 -i 本地文件混用
+ly video --model seedance2.0 -p "镜头推进" --param 'images=["https://example.com/reference.jpg"]'
+```
+
+未知的顶层字段仍保留为字符串，由 Gateway 校验；未声明的嵌套路径会在 CLI 端报错，因为它无法表示为合法嵌套请求。CLI 会补齐缺失的“必填且带 default”字段，用户传入的值优先；不做完整本地 schema 校验。位置提示词中的 `=` 会保持为提示词文本，额外字段请始终显式使用 `--param`。
+
+输入既可以是本地路径，也可以是 `http://` 或 `https://` URL。URL 输入可使用 OAuth 或 API Key；本地输入需要 OAuth，CLI 会通过 `file.echojoy.cn` 的预签名上传链路上传。对同时支持图片和视频输入的模型（如 Seedance），CLI 按文件扩展名将 `-i` 文件放入 `images` 或 `videos` 字段。单个本地文件上限为 **1 GiB**。
 
 ### 异步任务、下载和恢复
 

@@ -111,16 +111,7 @@ var modelInfoCmd = &cobra.Command{
 			return err
 		}
 
-		var matched *client.GatewayModel
-		for i := range models {
-			m := &models[i]
-			if m.ID == query || strings.EqualFold(m.DisplayName, query) ||
-				strings.Contains(strings.ToLower(m.DisplayName), strings.ToLower(query)) ||
-				strings.Contains(strings.ToLower(m.ID), strings.ToLower(query)) {
-				matched = m
-				break
-			}
-		}
+		matched := selectModelInfo(models, query)
 
 		if matched == nil {
 			env := output.Envelope{OK: false, Data: map[string]any{
@@ -148,7 +139,7 @@ var modelInfoCmd = &cobra.Command{
 					"endpoint":      entry.Endpoint,
 					"output_type":   entry.OutputType,
 					"feature_types": matched.FeatureTypes,
-					"input_schema":  string(matched.InputSchema),
+					"input_schema":  matched.InputSchema,
 				},
 			})
 		}
@@ -166,6 +157,26 @@ var modelInfoCmd = &cobra.Command{
 		fmt.Printf("\nInput Schema:\n%s\n", string(matched.InputSchema))
 		return nil
 	},
+}
+
+// selectModelInfo preserves convenient partial lookup while ensuring that a
+// model ID or display name supplied exactly returns that model's schema.
+func selectModelInfo(models []client.GatewayModel, query string) *client.GatewayModel {
+	for i := range models {
+		model := &models[i]
+		if model.ID == query || strings.EqualFold(model.DisplayName, query) {
+			return model
+		}
+	}
+	needle := strings.ToLower(query)
+	for i := range models {
+		model := &models[i]
+		if strings.Contains(strings.ToLower(model.DisplayName), needle) ||
+			strings.Contains(strings.ToLower(model.ID), needle) {
+			return model
+		}
+	}
+	return nil
 }
 
 var modelSearchCmd = &cobra.Command{
