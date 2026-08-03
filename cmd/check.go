@@ -18,35 +18,13 @@ var checkCmd = &cobra.Command{
 		jsonMode := isJSON(cmd)
 		resolved := authFactory(cmd)
 		if resolved.Value == "" {
-			env := output.Envelope{
-				OK: false,
-				Data: map[string]any{
-					"status":  "no_auth",
-					"message": "未配置鉴权，请先 ly auth login 或 ly auth set-key",
-				},
-			}
-			if jsonMode {
-				return output.JSON(env)
-			}
-			fmt.Println("❌ 未配置鉴权。请先 ly auth login 或 ly auth set-key")
-			return nil
+			return commandFailure(jsonMode, "no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", map[string]any{"status": "no_auth"})
 		}
 
 		c := client.New(resolved.Value)
 		models, err := c.ListModels(context.Background())
 		if err != nil {
-			env := output.Envelope{
-				OK: false,
-				Data: map[string]any{
-					"status":  "error",
-					"message": err.Error(),
-				},
-			}
-			if jsonMode {
-				return output.JSON(env)
-			}
-			fmt.Printf("❌ 连接失败: %v\n", err)
-			return nil
+			return err
 		}
 
 		typeCounts := make(map[string]int)

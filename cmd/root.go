@@ -3,7 +3,10 @@
 package cmd
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -12,8 +15,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var Version = "0.1.0"
+var Version = "dev"
 var configFile string
+
+var errEmptyPrompt = errors.New("未输入提示词")
 
 var rootCmd = &cobra.Command{
 	Use:   "ly",
@@ -114,4 +119,26 @@ func isJSON(cmd *cobra.Command) bool {
 func isDryRun(cmd *cobra.Command) bool {
 	v, _ := cmd.Flags().GetBool("dry-run")
 	return v
+}
+
+// commandFailure keeps the human CLI and the JSON/Agent interface aligned:
+// both return an error, so Execute exits non-zero. JSON errors are emitted
+// exactly once to stdout before the root command terminates.
+func commandFailure(jsonMode bool, code, message string, extra map[string]any) error {
+	if jsonMode {
+		return output.JSON(output.Failure(code, message, extra))
+	}
+	return errors.New(message)
+}
+
+func readInteractivePrompt(r io.Reader) (string, error) {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	value := strings.TrimSpace(line)
+	if value != "" {
+		return value, nil
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return "", errEmptyPrompt
 }

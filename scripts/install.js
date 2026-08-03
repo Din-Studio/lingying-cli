@@ -7,8 +7,8 @@
 //   git clone && make install       → builds locally
 //
 // If no prebuilt binary exists for this version, falls back with a helpful
-// message pointing to the other install methods (exit code 0 — npm install
-// should still succeed so go install / make install remain usable).
+// message pointing to the other install methods. npm installation fails so a
+// successful npm exit code always means the ly executable is usable.
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
@@ -239,8 +239,7 @@ async function main() {
     } else {
       console.error(`❌ ${err.message}`);
     }
-    // Don't fail npm install — user can still use source-based install.
-    process.exit(0);
+    process.exit(1);
   }
 }
 

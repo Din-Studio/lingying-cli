@@ -16,3 +16,11 @@ func TestSelectModelInfoPrefersExactMatchOverPartialMatch(t *testing.T) {
 		t.Fatalf("selected = %#v, want exact seedance2.0", matched)
 	}
 }
+
+func TestLimitModelsRespectsPositiveSize(t *testing.T) {
+	models := []client.GatewayModel{{ID: "one"}, {ID: "two"}, {ID: "three"}}
+	got := limitModels(models, 2)
+	if len(got) != 2 || got[0].ID != "one" || got[1].ID != "two" {
+		t.Fatalf("limitModels() = %#v", got)
+	}
+}

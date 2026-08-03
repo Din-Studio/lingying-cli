@@ -209,6 +209,8 @@ LY_CONFIG_FILE=./ly-config.json ly auth show
 
 为 Agent 或脚本使用 `--json`。成功和失败均在 stdout 输出一个 JSON 信封；进度信息写入 stderr。失败以非零状态码退出。
 
+提交到 Gateway 的 prompt、`--param` 和 JSON 嵌套字符串必须是 UTF-8。CLI 在发出 JSON 请求前检测无效 UTF-8，并拒绝发送而非静默替换字符；本地媒体二进制文件不受此限制。
+
 ```json
 {"ok": true, "data": {"reply": "...", "model": "..."}}
 {"ok": true, "data": {"task_id": "task_123", "status": "pending"}}

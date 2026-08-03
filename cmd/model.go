@@ -32,13 +32,7 @@ var modelListCmd = &cobra.Command{
 		jsonMode := isJSON(cmd)
 		resolved := auth.Resolve()
 		if resolved.Value == "" {
-			if jsonMode {
-				return output.JSON(output.Envelope{OK: false, Data: map[string]any{
-					"message": "未配置鉴权",
-				}})
-			}
-			fmt.Println("未配置鉴权。请先 ly auth login 或 ly auth set-key")
-			return nil
+			return commandFailure(jsonMode, "no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", nil)
 		}
 
 		c := client.New(resolved.Value)
@@ -54,6 +48,7 @@ var modelListCmd = &cobra.Command{
 				filtered = append(filtered, m)
 			}
 		}
+		filtered = limitModels(filtered, modelListSize)
 
 		if jsonMode {
 			return output.JSON(output.Envelope{
@@ -95,13 +90,7 @@ var modelInfoCmd = &cobra.Command{
 		jsonMode := isJSON(cmd)
 		resolved := auth.Resolve()
 		if resolved.Value == "" {
-			if jsonMode {
-				return output.JSON(output.Envelope{OK: false, Data: map[string]any{
-					"message": "未配置鉴权",
-				}})
-			}
-			fmt.Println("未配置鉴权")
-			return nil
+			return commandFailure(jsonMode, "no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", nil)
 		}
 
 		query := args[0]
@@ -114,14 +103,7 @@ var modelInfoCmd = &cobra.Command{
 		matched := selectModelInfo(models, query)
 
 		if matched == nil {
-			env := output.Envelope{OK: false, Data: map[string]any{
-				"message": fmt.Sprintf("未找到模型: %s", query),
-			}}
-			if jsonMode {
-				return output.JSON(env)
-			}
-			fmt.Printf("未找到模型: %s\n", query)
-			return nil
+			return commandFailure(jsonMode, "model_not_found", fmt.Sprintf("未找到模型: %s", query), nil)
 		}
 
 		entry, _ := registry.Lookup(matched.ModelType)
@@ -179,6 +161,13 @@ func selectModelInfo(models []client.GatewayModel, query string) *client.Gateway
 	return nil
 }
 
+func limitModels(models []client.GatewayModel, size int) []client.GatewayModel {
+	if size > 0 && len(models) > size {
+		return models[:size]
+	}
+	return models
+}
+
 var modelSearchCmd = &cobra.Command{
 	Use:   "search <keyword>",
 	Short: "搜索模型",
@@ -187,13 +176,7 @@ var modelSearchCmd = &cobra.Command{
 		jsonMode := isJSON(cmd)
 		resolved := auth.Resolve()
 		if resolved.Value == "" {
-			if jsonMode {
-				return output.JSON(output.Envelope{OK: false, Data: map[string]any{
-					"message": "未配置鉴权",
-				}})
-			}
-			fmt.Println("未配置鉴权")
-			return nil
+			return commandFailure(jsonMode, "no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", nil)
 		}
 
 		keyword := strings.ToLower(args[0])

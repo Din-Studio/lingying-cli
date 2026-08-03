@@ -152,7 +152,7 @@ if [ -n "$bin_url" ]; then
       fail "校验和格式无效: $expected_hash"
     fi
   else
-    say "无法下载校验和文件，跳过完整性验证（不推荐）"
+    fail "无法下载校验和文件，已取消安装以避免安装未经校验的二进制"
   fi
 
   # 2. Download binary archive.

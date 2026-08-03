@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -112,6 +113,9 @@ func (c *Client) MediaEndpoint(path string) string { return c.gateway(path) }
 func (c *Client) doJSON(ctx context.Context, method, url string, body any) ([]byte, error) {
 	var r io.Reader
 	if body != nil {
+		if err := validateUTF8JSONValue(body); err != nil {
+			return nil, err
+		}
 		b, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("marshal: %w", err)
@@ -141,6 +145,49 @@ func (c *Client) doJSON(ctx context.Context, method, url string, body any) ([]by
 		return nil, parseGatewayError(resp.StatusCode, respBody)
 	}
 	return respBody, nil
+}
+
+// validateUTF8JSONValue rejects invalid UTF-8 before encoding JSON. The Go
+// JSON encoder would otherwise replace invalid bytes with U+FFFD, silently
+// changing prompts or schema parameters after the user has reviewed them.
+func validateUTF8JSONValue(value any) error {
+	switch typed := value.(type) {
+	case string:
+		if !utf8.ValidString(typed) {
+			return fmt.Errorf("请求内容包含无效 UTF-8 字符")
+		}
+	case map[string]any:
+		for key, child := range typed {
+			if !utf8.ValidString(key) {
+				return fmt.Errorf("请求字段名包含无效 UTF-8 字符")
+			}
+			if err := validateUTF8JSONValue(child); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if err := validateUTF8JSONValue(child); err != nil {
+				return err
+			}
+		}
+	case []string:
+		for _, child := range typed {
+			if err := validateUTF8JSONValue(child); err != nil {
+				return err
+			}
+		}
+	case []ChatMessage:
+		for _, message := range typed {
+			if err := validateUTF8JSONValue(message.Role); err != nil {
+				return err
+			}
+			if err := validateUTF8JSONValue(message.Content); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func parseGatewayError(status int, body []byte) error {

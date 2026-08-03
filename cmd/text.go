@@ -37,14 +37,7 @@ var textCmd = &cobra.Command{
 		// Resolve auth
 		resolved := auth.Resolve()
 		if resolved.Value == "" {
-			env := output.Envelope{OK: false, Data: map[string]any{
-				"message": "未配置鉴权，请先 ly auth login 或 ly auth set-key",
-			}}
-			if jsonMode {
-				return output.JSON(env)
-			}
-			fmt.Println("❌ 未配置鉴权。请先 ly auth login 或 ly auth set-key")
-			return nil
+			return commandFailure(jsonMode, "no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", nil)
 		}
 
 		// Pick model
@@ -70,18 +63,15 @@ var textCmd = &cobra.Command{
 		prompt := strings.Join(args, " ")
 
 		if prompt == "" {
+			if jsonMode {
+				return commandFailure(true, "input_required", "未输入 prompt", nil)
+			}
 			// Interactive: ask for prompt
 			fmt.Printf("使用模型: %s\n", modelID)
 			fmt.Print("输入: ")
-			fmt.Scanln(&prompt)
-			if prompt == "" {
-				env := output.Envelope{OK: false, Data: map[string]any{
-					"message": "未输入 prompt",
-				}}
-				if jsonMode {
-					return output.JSON(env)
-				}
-				return nil
+			prompt, err = readInteractivePrompt(cmd.InOrStdin())
+			if err != nil {
+				return commandFailure(false, "input_required", "未输入 prompt", nil)
 			}
 		}
 
@@ -110,12 +100,7 @@ var textCmd = &cobra.Command{
 
 		reply, err := c.Chat(ctx, modelID, matched.APIFormat, messages, params)
 		if err != nil {
-			env := output.Envelope{OK: false, Data: map[string]any{"message": err.Error()}}
-			if jsonMode {
-				return output.JSON(env)
-			}
-			fmt.Printf("❌ %v\n", err)
-			return nil
+			return err
 		}
 
 		env := output.Envelope{OK: true, Data: map[string]any{

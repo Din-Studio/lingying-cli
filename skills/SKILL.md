@@ -12,17 +12,19 @@ metadata:
 
 **CRITICAL — Agent 必须使用 `--json`。stdout 只会输出一个统一信封 `{ok, data, meta}`；先检查 `ok`，再读 `data`。**
 
+**CRITICAL — 所有提交到 Gateway 的文本必须为 UTF-8。** Prompt、`--param` 值以及 JSON object/array 内的字符串都应以 UTF-8 编码传入。CLI 会在发送请求前检测无效 UTF-8 并以非零退出，绝不静默替换为乱码；图片、视频、音频等二进制文件不受此规则限制。
+
 ## 鉴权
 
 | 命令 | 说明 |
 |------|------|
-| `ly auth login` | OAuth 浏览器登录 (支持文件上传) |
+| `ly auth login` | 仅交互式 OAuth Token 粘贴登录（支持文件上传；Agent 不要加 `--json` 调用） |
 | `ly auth set-key <key>` | API Key (不支持本地文件上传) |
 | `ly auth show` | 查看当前鉴权状态 |
 | `ly auth path` | 显示本地配置文件路径 |
 | `ly check` | 检查连通性和可用模型 |
 
-无人值守调用优先设置 `LY_ACCESS_TOKEN`（OAuth）或 `LY_API_KEY`，不要把密钥放到 `ly auth set-key` 的命令行参数中。持久化配置位于 macOS/Linux `~/.config/ly/config.json` 或 Windows `%APPDATA%\\ly\\config.json`；运行 `ly auth path` 可查看实际位置。
+无人值守调用必须设置 `LY_ACCESS_TOKEN`（OAuth）或 `LY_API_KEY`，不要把密钥放到 `ly auth set-key` 的命令行参数中，也不要调用交互式 `auth login`。持久化配置位于 macOS/Linux `~/.config/ly/config.json` 或 Windows `%APPDATA%\\ly\\config.json`；运行 `ly auth path` 可查看实际位置。
 
 OAuth 模式支持本地文件上传 (自动上传到 file.echojoy.cn 并拿到 download_url)。
 API Key 模式只能传远程 URL，不能传本地路径。

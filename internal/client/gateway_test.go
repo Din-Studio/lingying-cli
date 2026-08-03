@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +60,25 @@ func TestChatSendsOptionalSchemaParameters(t *testing.T) {
 	)
 	if err != nil || reply != "ok" {
 		t.Fatalf("Chat() = %q, %v", reply, err)
+	}
+}
+
+func TestChatRejectsInvalidUTF8BeforeSendingRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+	}))
+	defer server.Close()
+
+	invalid := string([]byte{0xff})
+	_, err := NewWithBaseURL("secret", server.URL).Chat(
+		context.Background(), "model-1", "openai", []ChatMessage{{Role: "user", Content: invalid}}, nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "UTF-8") {
+		t.Fatalf("Chat() error = %v, want UTF-8 validation error", err)
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, invalid text must not be sent", requests)
 	}
 }
 

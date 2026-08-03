@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +15,16 @@ func TestSelectMediaModelRejectsMissingRequestedModel(t *testing.T) {
 	_, err := selectMediaModel(models, map[string]bool{"image": true}, "not-present")
 	if err == nil || !strings.Contains(err.Error(), "未找到") {
 		t.Fatalf("selectMediaModel() error = %v, want missing-model error", err)
+	}
+}
+
+func TestEnsureOutputParentCreatesRequestedOutputDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "result.png")
+	if err := ensureOutputParent(path); err != nil {
+		t.Fatalf("ensureOutputParent() error = %v", err)
+	}
+	if info, err := os.Stat(filepath.Dir(path)); err != nil || !info.IsDir() {
+		t.Fatalf("output directory = %v, %v", info, err)
 	}
 }
 

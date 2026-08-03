@@ -34,23 +34,17 @@ var authLoginCmd = &cobra.Command{
   ly auth login`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		jsonMode := isJSON(cmd)
+		if jsonMode {
+			return commandFailure(true, "interactive_auth_required", "ly auth login 需要交互式终端；自动化场景请设置 LY_ACCESS_TOKEN", nil)
+		}
 
-		// Device Flow: print URL → user opens browser → poll for token
-		// For now, prompt user to paste token directly (simplest path)
+		// OAuth Device Flow is not available yet; prompt for a pasted token.
 		fmt.Print("请在浏览器中打开 https://console.echojoy.cn/console/login 完成登录。\n")
 		fmt.Print("登录后将控制台中的 Access Token 粘贴到此处: ")
 
-		var token string
-		fmt.Scanln(&token)
-		if token == "" {
-			env := output.Envelope{OK: false, Data: map[string]any{
-				"message": "未输入 Access Token",
-			}}
-			if jsonMode {
-				return output.JSON(env)
-			}
-			fmt.Println("❌ 未输入 Access Token")
-			return nil
+		token, err := readInteractivePrompt(cmd.InOrStdin())
+		if err != nil {
+			return commandFailure(false, "input_required", "未输入 Access Token", nil)
 		}
 
 		if err := auth.StoreOAuthToken(token, ""); err != nil {
@@ -95,14 +89,7 @@ var authShowCmd = &cobra.Command{
 		jsonMode := isJSON(cmd)
 		r := auth.Resolve()
 		if r.Value == "" {
-			env := output.Envelope{OK: false, Data: map[string]any{
-				"message": "未配置鉴权",
-			}}
-			if jsonMode {
-				return output.JSON(env)
-			}
-			fmt.Println("未配置鉴权")
-			return nil
+			return commandFailure(jsonMode, "no_auth", "未配置鉴权", nil)
 		}
 		env := output.Envelope{OK: true, Data: map[string]any{
 			"auth_type":   r.Type,

@@ -38,25 +38,11 @@ func runMedia(
 
 	resolved := auth.Resolve()
 	if resolved.Value == "" {
-		env := output.Envelope{OK: false, Data: map[string]any{
-			"message": "未配置鉴权，请先 ly auth login 或 ly auth set-key",
-		}}
-		if jsonMode {
-			return output.JSON(env)
-		}
-		fmt.Println("❌ 未配置鉴权。请先 ly auth login 或 ly auth set-key")
-		return nil
+		return commandFailure(jsonMode, "no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", nil)
 	}
 
 	if len(inputFiles) > 0 && !resolved.HasUpload() {
-		env := output.Envelope{OK: false, Data: map[string]any{
-			"message": "本地文件上传仅 OAuth 模式下可用，请先 ly auth login。或传入 URL 而非本地路径。",
-		}}
-		if jsonMode {
-			return output.JSON(env)
-		}
-		fmt.Println("❌ 本地文件上传仅 OAuth 模式下可用。请先 ly auth login，或传入远程 URL 而非本地文件路径。")
-		return nil
+		return commandFailure(jsonMode, "upload_auth_required", "本地文件上传仅 OAuth 模式下可用，请先 ly auth login。或传入 URL 而非本地路径。", nil)
 	}
 
 	c := client.New(resolved.Value)
@@ -92,15 +78,15 @@ func runMedia(
 	}
 
 	if prompt == "" {
+		if jsonMode {
+			return commandFailure(true, "input_required", "未输入提示词", nil)
+		}
 		showModelList(candidates)
 		fmt.Printf("当前选择: %s (%s)\n", matched.DisplayName, matched.ID)
 		fmt.Print("提示词: ")
-		fmt.Scanln(&prompt)
-		if prompt == "" {
-			if jsonMode {
-				return output.JSON(output.Envelope{OK: false, Data: map[string]any{"message": "未输入提示词"}})
-			}
-			return nil
+		prompt, err = readInteractivePrompt(cmd.InOrStdin())
+		if err != nil {
+			return commandFailure(false, "input_required", "未输入提示词", nil)
 		}
 	}
 
@@ -216,14 +202,14 @@ func runMedia(
 	}
 
 	outDir := outputDir()
-	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return err
-	}
 	files := make([]string, 0, len(urls))
 	for i, url := range urls {
 		outFile := filepath.Join(outDir, fmt.Sprintf("result-%s-%d.%s", taskID, i+1, entry.OutputExt))
 		if outputPath != "" && i == 0 {
 			outFile = outputPath
+		}
+		if err := ensureOutputParent(outFile); err != nil {
+			return err
 		}
 		if err := c.Download(ctx, url, outFile); err != nil {
 			if jsonMode {
@@ -633,6 +619,10 @@ func outputDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "ly-output")
+}
+
+func ensureOutputParent(path string) error {
+	return os.MkdirAll(filepath.Dir(path), 0755)
 }
 
 func init() {

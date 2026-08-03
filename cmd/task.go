@@ -24,12 +24,7 @@ var taskGetCmd = &cobra.Command{
 		jsonMode := isJSON(cmd)
 		resolved := auth.Resolve()
 		if resolved.Value == "" {
-			env := output.Failure("no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", nil)
-			if jsonMode {
-				return output.JSON(env)
-			}
-			fmt.Println("❌ 未配置鉴权。请先 ly auth login 或 ly auth set-key")
-			return nil
+			return commandFailure(jsonMode, "no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", nil)
 		}
 
 		body, err := client.New(resolved.Value).GetTask(context.Background(), args[0])
