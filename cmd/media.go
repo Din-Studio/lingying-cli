@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -109,7 +110,7 @@ func runMedia(
 		if len(parts) != 2 || parts[0] == "" {
 			return fmt.Errorf("非法 --param %q，应为 key=value", p)
 		}
-		inputData[parts[0]] = guessType(parts[1])
+		inputData[parts[0]] = coerceParamValue(parts[0], parts[1], matched.InputSchema)
 	}
 	applyRequiredSchemaDefaults(inputData, matched.InputSchema)
 
@@ -407,22 +408,62 @@ func getPromptFromArgs(args []string, params *[]string) string {
 	return strings.Join(parts, " ")
 }
 
-func guessType(raw string) any {
-	switch strings.ToLower(raw) {
-	case "true", "yes", "1":
-		return true
-	case "false", "no", "0":
-		return false
-	}
-	var n int
-	if _, err := fmt.Sscanf(raw, "%d", &n); err == nil {
-		return n
-	}
-	var f float64
-	if _, err := fmt.Sscanf(raw, "%f", &f); err == nil && strings.Contains(raw, ".") {
-		return f
+// coerceParamValue performs the minimal conversion needed to encode a CLI
+// parameter according to the current Gateway schema. Unknown and complex
+// fields remain strings so the Gateway can validate them authoritatively.
+func coerceParamValue(key, raw string, schema json.RawMessage) any {
+	switch inputSchemaPropertyType(key, schema) {
+	case "boolean":
+		switch strings.ToLower(raw) {
+		case "true", "yes", "1":
+			return true
+		case "false", "no", "0":
+			return false
+		}
+	case "integer":
+		if value, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			return value
+		}
+	case "number":
+		if value, err := strconv.ParseFloat(raw, 64); err == nil {
+			return value
+		}
 	}
 	return raw
+}
+
+func inputSchemaPropertyType(key string, schema json.RawMessage) string {
+	var definition struct {
+		Properties map[string]struct {
+			Type json.RawMessage `json:"type"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(schema, &definition) != nil {
+		return ""
+	}
+	property, exists := definition.Properties[key]
+	if !exists {
+		return ""
+	}
+	var single string
+	if json.Unmarshal(property.Type, &single) == nil {
+		return single
+	}
+	var multiple []string
+	if json.Unmarshal(property.Type, &multiple) != nil {
+		return ""
+	}
+	for _, candidate := range multiple {
+		if candidate == "string" {
+			return "string"
+		}
+	}
+	for _, candidate := range multiple {
+		if candidate == "boolean" || candidate == "integer" || candidate == "number" {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // applyRequiredSchemaDefaults copies only required fields with an explicit

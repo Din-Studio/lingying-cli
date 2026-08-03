@@ -89,3 +89,31 @@ func TestApplyRequiredSchemaDefaultsFillsMissingRequiredValues(t *testing.T) {
 		t.Fatal("optional default quality must be left to Gateway")
 	}
 }
+
+func TestCoerceParamValueUsesDiscoveredSchemaTypes(t *testing.T) {
+	schema := json.RawMessage(`{
+		"properties": {
+			"aspect_ratio": {"type": "string"},
+			"resolution": {"type": "string"},
+			"duration": {"type": "integer"},
+			"generate_audio": {"type": "boolean"}
+		}
+	}`)
+
+	cases := []struct {
+		key  string
+		raw  string
+		want any
+	}{
+		{key: "aspect_ratio", raw: "9:16", want: "9:16"},
+		{key: "resolution", raw: "1K", want: "1K"},
+		{key: "duration", raw: "10", want: int64(10)},
+		{key: "generate_audio", raw: "yes", want: true},
+		{key: "unknown", raw: "1", want: "1"},
+	}
+	for _, tc := range cases {
+		if got := coerceParamValue(tc.key, tc.raw, schema); got != tc.want {
+			t.Fatalf("coerceParamValue(%q, %q) = %#v (%T), want %#v (%T)", tc.key, tc.raw, got, got, tc.want, tc.want)
+		}
+	}
+}

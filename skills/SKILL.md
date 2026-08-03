@@ -107,11 +107,12 @@ done < prompts.txt
 
 ## 参数类型
 
---param 传参时 CLI 自动猜测类型:
-- true/false/yes/no/1/0 → boolean
-- 纯数字 → integer
-- 数字含小数点 → float
-- 其他 → string
+
+`--param` 对本次模型 schema 中的顶层字段按类型编码：
+- string 保持原文（例如 `9:16`、`1K`）
+- integer / number 使用严格完整数值解析
+- boolean 支持 true/false、yes/no、1/0
+- 未知或复杂字段保持 string，由 Gateway 校验
 
 对 Gateway schema 中“必填且有 default”的缺失字段，CLI 会自动补齐；`--param` 显式传入的值优先。其他非法参数会被 Gateway 拒绝，Agent 读错误后修正重试。CLI 不做完整 schema 校验。
 
