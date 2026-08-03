@@ -4,3 +4,6 @@
 .tmp
 *.exe
 .idea/
+
+# Local agent design and implementation notes.
+/docs/superpowers/
