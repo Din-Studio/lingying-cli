@@ -93,3 +93,10 @@ func TestExtractResultURLsFindsNestedMediaURLs(t *testing.T) {
 		t.Fatalf("urls = %#v", urls)
 	}
 }
+
+func TestMaxUploadBytesIsOneGiB(t *testing.T) {
+	const oneGiB = int64(1024 * 1024 * 1024)
+	if MaxUploadBytes != oneGiB {
+		t.Fatalf("MaxUploadBytes = %d, want %d", MaxUploadBytes, oneGiB)
+	}
+}

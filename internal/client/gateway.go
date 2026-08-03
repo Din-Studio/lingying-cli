@@ -16,9 +16,11 @@ import (
 )
 
 const (
-	GatewayBase          = "https://console.echojoy.cn/gateway"
-	FileService          = "https://file.echojoy.cn"
-	MaxUploadBytes int64 = 500 * 1024 * 1024
+	GatewayBase = "https://console.echojoy.cn/gateway"
+	FileService = "https://file.echojoy.cn"
+	// MaxUploadBytes matches the guaranteed single-file capacity of the
+	// pre-signed cloud-storage upload path.
+	MaxUploadBytes int64 = 1024 * 1024 * 1024
 )
 
 // ── Model types from GET /v1/models ──
