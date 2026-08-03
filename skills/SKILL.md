@@ -105,7 +105,7 @@ Agent 工作流:
 - 数字含小数点 → float
 - 其他 → string
 
-非法参数会被 Gateway 拒绝，Agent 读错误后修正重试。CLI 不校验。
+对 Gateway schema 中“必填且有 default”的缺失字段，CLI 会自动补齐；`--param` 显式传入的值优先。其他非法参数会被 Gateway 拒绝，Agent 读错误后修正重试。CLI 不做完整 schema 校验。
 
 ## 错误处理
 

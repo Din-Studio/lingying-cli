@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -58,5 +59,33 @@ func TestSelectMediaModelChoosesStableDynamicDefault(t *testing.T) {
 	}
 	if model.ID != "image-a" {
 		t.Fatalf("selected ID = %q, want image-a", model.ID)
+	}
+}
+
+func TestApplyRequiredSchemaDefaultsFillsMissingRequiredValues(t *testing.T) {
+	input := map[string]any{
+		"prompt":     "赛博朋克猫",
+		"resolution": "4K",
+	}
+	schema := json.RawMessage(`{
+		"required": ["prompt", "aspect_ratio", "resolution"],
+		"properties": {
+			"prompt": {"type": "string"},
+			"aspect_ratio": {"type": "string", "default": "1:1"},
+			"resolution": {"type": "string", "default": "1K"},
+			"quality": {"type": "string", "default": "medium"}
+		}
+	}`)
+
+	applyRequiredSchemaDefaults(input, schema)
+
+	if got := input["aspect_ratio"]; got != "1:1" {
+		t.Fatalf("aspect_ratio = %#v, want default 1:1", got)
+	}
+	if got := input["resolution"]; got != "4K" {
+		t.Fatalf("resolution = %#v, want user value 4K", got)
+	}
+	if _, exists := input["quality"]; exists {
+		t.Fatal("optional default quality must be left to Gateway")
 	}
 }

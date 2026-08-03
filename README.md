@@ -117,7 +117,7 @@ CLI 每次调用均从 Gateway 动态发现模型，不缓存或内置静态能�
 | `ly <image\|video\|audio> --param key=value` | 传递额外模型字段，可重复使用 |
 | `ly <image\|video\|audio> --output ./result.png` | 指定第一个结果文件的保存位置 |
 
-`--param` 会将 `true`、`false`、`yes`、`no`、`1`、`0` 识别为布尔值，将整数和小数识别为数值；其他内容按字符串传给 Gateway。CLI 不做完整本地 schema 校验。
+`--param` 会将 `true`、`false`、`yes`、`no`、`1`、`0` 识别为布尔值，将整数和小数识别为数值；其他内容按字符串传给 Gateway。CLI 会从本次模型 `input_schema` 补齐缺失的“必填且带 default”字段，用户传入的值优先；不做完整本地 schema 校验，其他字段错误仍由 Gateway 返回。
 
 输入既可以是本地路径，也可以是 `http://` 或 `https://` URL。URL 输入可使用 OAuth 或 API Key；本地输入需要 OAuth，CLI 会通过 `file.echojoy.cn` 的预签名上传链路上传。单个本地文件上限为 **1 GiB**。
 

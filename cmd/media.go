@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -110,6 +111,7 @@ func runMedia(
 		}
 		inputData[parts[0]] = guessType(parts[1])
 	}
+	applyRequiredSchemaDefaults(inputData, matched.InputSchema)
 
 	if dryRun {
 		if len(inputFiles) > 0 {
@@ -421,6 +423,35 @@ func guessType(raw string) any {
 		return f
 	}
 	return raw
+}
+
+// applyRequiredSchemaDefaults copies only required fields with an explicit
+// JSON Schema default into input. It deliberately does not validate the full
+// schema or send optional defaults: the Gateway remains the source of truth
+// for validation and optional-value fallback.
+func applyRequiredSchemaDefaults(input map[string]any, schema json.RawMessage) {
+	var definition struct {
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if len(schema) == 0 || json.Unmarshal(schema, &definition) != nil {
+		return
+	}
+	for _, key := range definition.Required {
+		if _, exists := input[key]; exists {
+			continue
+		}
+		var property struct {
+			Default json.RawMessage `json:"default"`
+		}
+		if raw, exists := definition.Properties[key]; !exists || json.Unmarshal(raw, &property) != nil || len(property.Default) == 0 {
+			continue
+		}
+		var value any
+		if json.Unmarshal(property.Default, &value) == nil {
+			input[key] = value
+		}
+	}
 }
 
 func outputDir() string {
