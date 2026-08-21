@@ -3,11 +3,13 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -443,106 +445,196 @@ func (c *Client) Download(ctx context.Context, url, path string) error {
 	return nil
 }
 
-// ── File upload (OAuth only) ──
+// ── File upload (OAuth only, presigned) ──
 
+// 上传参数为包级变量（非 const），测试可调小以触发分片路径。
+// 数值与 media-sync worker 的生产默认值一致。
+var (
+	multipartThreshold int64 = 50 * 1024 * 1024 // ≥ 此值走分片
+	uploadPartSize     int64 = 5 * 1024 * 1024
+	uploadConcurrency        = 4
+)
+
+type presignedInitResponse struct {
+	FileID       string `json:"file_id"`
+	UploadURL    string `json:"upload_url"`
+	Status       string `json:"status"`
+	Deduplicated bool   `json:"deduplicated"`
+}
+
+// UploadFile 通过 AssetHub 预签名流程上传本地文件并返回下载直链：
+// init →（未命中去重时）PUT 预签名 URL → completion → link。
 func (c *Client) UploadFile(ctx context.Context, name, localPath string) (string, error) {
 	file, err := os.Open(localPath)
 	if err != nil {
 		return "", fmt.Errorf("打开上传文件失败: %w", err)
 	}
-	fileClosed := false
-	defer func() {
-		if !fileClosed {
-			_ = file.Close()
-		}
-	}()
-	if info, err := file.Stat(); err != nil {
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
 		return "", fmt.Errorf("读取上传文件信息失败: %w", err)
-	} else if info.Size() > MaxUploadBytes {
+	}
+	size := info.Size()
+	if size > MaxUploadBytes {
 		return "", fmt.Errorf("文件超过上传上限 %d MiB", MaxUploadBytes/(1024*1024))
 	}
 
-	tmp, err := os.CreateTemp("", "ly-upload-*.multipart")
+	contentType, err := detectFileContentType(name, file)
 	if err != nil {
-		return "", fmt.Errorf("创建上传临时文件失败: %w", err)
+		return "", fmt.Errorf("识别文件类型失败: %w", err)
 	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	w := multipart.NewWriter(tmp)
-	fw, err := w.CreateFormFile("file", name)
-	if err != nil {
-		_ = tmp.Close()
-		return "", fmt.Errorf("创建上传表单失败: %w", err)
-	}
-	written, err := io.Copy(fw, io.LimitReader(file, MaxUploadBytes+1))
-	closeErr := file.Close()
-	fileClosed = true
-	if err != nil {
-		_ = tmp.Close()
-		return "", fmt.Errorf("读取上传文件失败: %w", err)
-	}
-	if closeErr != nil {
-		_ = tmp.Close()
-		return "", fmt.Errorf("关闭上传文件失败: %w", closeErr)
-	}
-	if written > MaxUploadBytes {
-		_ = tmp.Close()
-		return "", fmt.Errorf("文件超过上传上限 %d MiB", MaxUploadBytes/(1024*1024))
-	}
-	if err := w.WriteField("name", name); err != nil {
-		_ = tmp.Close()
-		return "", fmt.Errorf("写入上传表单失败: %w", err)
-	}
-	contentType := w.FormDataContentType()
-	if err := w.Close(); err != nil {
-		_ = tmp.Close()
-		return "", fmt.Errorf("完成上传表单失败: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("关闭上传临时文件失败: %w", err)
-	}
-	body, err := os.Open(tmpPath)
-	if err != nil {
-		return "", fmt.Errorf("读取上传临时文件失败: %w", err)
-	}
-	defer body.Close()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.fileServiceURL+"/api/v1/files", body)
+	var fileID string
+	if size < multipartThreshold {
+		fileID, err = c.uploadSmall(ctx, file, name, contentType, size)
+	} else {
+		fileID, err = c.uploadMultipart(ctx, localPath, name, contentType, size)
+	}
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Content-Type", contentType)
+	return c.fileLink(ctx, fileID)
+}
 
+// uploadSmall 单次预签名 PUT。带 sha256 哈希以启用服务端内容去重。
+func (c *Client) uploadSmall(ctx context.Context, file *os.File, name, contentType string, size int64) (string, error) {
+	h := sha256.New()
+	if _, err := io.Copy(h, file); err != nil {
+		return "", fmt.Errorf("计算文件哈希失败: %w", err)
+	}
+	var init presignedInitResponse
+	err := c.fileAPI(ctx, http.MethodPost, "/api/v1/files/presigned", map[string]any{
+		"name":         name,
+		"size":         size,
+		"content_type": contentType,
+		"hash":         hex.EncodeToString(h.Sum(nil)),
+	}, &init)
+	if err != nil {
+		return "", err
+	}
+	// 去重短路：服务端已有相同内容，无需再传字节。
+	if init.Deduplicated || (init.Status == "completed" && init.UploadURL == "") {
+		return init.FileID, nil
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("读取上传文件失败: %w", err)
+	}
+	if _, err := c.putPresigned(ctx, init.UploadURL, contentType, file, size); err != nil {
+		return "", err
+	}
+	if err := c.fileAPI(ctx, http.MethodPost, "/api/v1/files/"+init.FileID+"/completion", nil, nil); err != nil {
+		return "", err
+	}
+	return init.FileID, nil
+}
+
+// uploadMultipart 在后续任务中实现分片路径。
+func (c *Client) uploadMultipart(ctx context.Context, localPath, name, contentType string, size int64) (string, error) {
+	return "", fmt.Errorf("分片上传未实现")
+}
+
+// putPresigned 把 body PUT 到预签名 URL。不带应用鉴权头（URL 自鉴权）。
+// Content-Type 参与签名，必须与 init 时一致。返回响应头 ETag（分片上传需要）。
+func (c *Client) putPresigned(ctx context.Context, url, contentType string, body io.Reader, size int64) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
+	if err != nil {
+		return "", err
+	}
+	req.ContentLength = size
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("上传失败: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("上传失败: 预签名 PUT HTTP %d", resp.StatusCode)
+	}
+	return resp.Header.Get("ETag"), nil
+}
 
-	respData, err := io.ReadAll(resp.Body)
+// fileLink 获取文件下载直链（去重/单次/分片三条路径统一出口）。
+func (c *Client) fileLink(ctx context.Context, fileID string) (string, error) {
+	var out struct {
+		DownloadURL string `json:"download_url"`
+	}
+	if err := c.fileAPI(ctx, http.MethodGet, "/api/v1/files/"+fileID+"/link?url_format=direct", nil, &out); err != nil {
+		return "", err
+	}
+	if out.DownloadURL == "" {
+		return "", fmt.Errorf("上传成功但下载链接为空")
+	}
+	return out.DownloadURL, nil
+}
+
+// fileAPI 调用 AssetHub JSON 接口并解开 {code, message, data} 信封。
+func (c *Client) fileAPI(ctx context.Context, method, path string, body, out any) error {
+	var reader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.fileServiceURL+path, reader)
 	if err != nil {
-		return "", fmt.Errorf("读取上传响应失败: %w", err)
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("文件服务请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("读取文件服务响应失败: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("上传失败: HTTP %d: %s", resp.StatusCode, string(respData[:min(len(respData), 300)]))
+		return fmt.Errorf("文件服务 HTTP %d: %s", resp.StatusCode, string(data[:min(len(data), 300)]))
 	}
+	var env struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return fmt.Errorf("解析文件服务响应失败: %s", string(data[:min(len(data), 200)]))
+	}
+	if env.Code != 0 {
+		return fmt.Errorf("文件服务错误: %s", env.Message)
+	}
+	if out != nil {
+		if err := json.Unmarshal(env.Data, out); err != nil {
+			return fmt.Errorf("解析文件服务响应失败: %s", string(data[:min(len(data), 200)]))
+		}
+	}
+	return nil
+}
 
-	var result struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Data    struct {
-			DownloadURL string `json:"download_url"`
-			FileID      string `json:"file_id"`
-		} `json:"data"`
+// detectFileContentType 先按扩展名推断，取不到再嗅探前 512 字节。
+// 返回前把读取偏移复位到文件开头。
+func detectFileContentType(name string, file *os.File) (string, error) {
+	if ct := mime.TypeByExtension(strings.ToLower(filepath.Ext(name))); ct != "" {
+		return ct, nil
 	}
-	if err := json.Unmarshal(respData, &result); err != nil {
-		return "", fmt.Errorf("解析上传响应失败: %s", string(respData)[:200])
+	buf := make([]byte, 512)
+	n, err := file.Read(buf)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
 	}
-	if result.Code != 0 || result.Data.DownloadURL == "" {
-		return "", fmt.Errorf("上传失败: %s", result.Message)
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", err
 	}
-	return result.Data.DownloadURL, nil
+	return http.DetectContentType(buf[:n]), nil
 }
 
 func replaceFile(tempPath, destination string) error {

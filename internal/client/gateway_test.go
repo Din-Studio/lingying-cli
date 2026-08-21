@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -82,24 +83,88 @@ func TestChatRejectsInvalidUTF8BeforeSendingRequest(t *testing.T) {
 	}
 }
 
-func TestUploadFileStreamsMultipartAndChecksHTTPStatus(t *testing.T) {
+func TestUploadFilePresignedSmallFlow(t *testing.T) {
+	var mu sync.Mutex
+	var putBody []byte
+	var putContentType, putAuth string
+	var completed bool
+	var serverURL string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/files" {
-			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method + " " + r.URL.Path {
+		case "POST /api/v1/files/presigned":
+			if got := r.Header.Get("Authorization"); got != "Bearer secret" {
+				t.Errorf("init Authorization = %q", got)
+			}
+			var req struct {
+				Name        string `json:"name"`
+				Size        int64  `json:"size"`
+				ContentType string `json:"content_type"`
+				Hash        string `json:"hash"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("decode init request: %v", err)
+			}
+			// sha256("hello") 固定值，校验去重哈希按内容计算
+			if req.Name != "hello.txt" || req.Size != 5 ||
+				req.Hash != "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" {
+				t.Errorf("init request = %+v", req)
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"file_id":"f-1","upload_url":"` + serverURL + `/put/f-1","status":"pending","deduplicated":false}}`))
+		case "PUT /put/f-1":
+			putAuth = r.Header.Get("Authorization")
+			putContentType = r.Header.Get("Content-Type")
+			putBody, _ = io.ReadAll(r.Body)
+		case "POST /api/v1/files/f-1/completion":
+			completed = true
+			_, _ = w.Write([]byte(`{"code":0,"data":{"file_id":"f-1","status":"completed"}}`))
+		case "GET /api/v1/files/f-1/link":
+			if got := r.URL.Query().Get("url_format"); got != "direct" {
+				t.Errorf("link url_format = %q", got)
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"download_url":"https://files.test/hello"}}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
 		}
-		if err := r.ParseMultipartForm(1024); err != nil {
-			t.Fatalf("ParseMultipartForm: %v", err)
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	path := filepath.Join(t.TempDir(), "hello.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	url, err := NewWithEndpoints("secret", "https://gateway.test", server.URL).UploadFile(context.Background(), "hello.txt", path)
+	if err != nil || url != "https://files.test/hello" {
+		t.Fatalf("UploadFile() = %q, %v", url, err)
+	}
+	if !bytes.Equal(putBody, []byte("hello")) {
+		t.Fatalf("PUT body = %q", putBody)
+	}
+	if putAuth != "" {
+		t.Fatalf("presigned PUT must not carry auth header, got %q", putAuth)
+	}
+	if putContentType != "text/plain; charset=utf-8" {
+		t.Fatalf("PUT Content-Type = %q", putContentType)
+	}
+	if !completed {
+		t.Fatal("completion was not called")
+	}
+}
+
+func TestUploadFilePresignedDedupSkipsPut(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /api/v1/files/presigned":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"file_id":"f-2","status":"completed","deduplicated":true}}`))
+		case "GET /api/v1/files/f-2/link":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"download_url":"https://files.test/dedup"}}`))
+		default:
+			t.Errorf("dedup path must not call %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
 		}
-		file, _, err := r.FormFile("file")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer file.Close()
-		got, err := io.ReadAll(file)
-		if err != nil || !bytes.Equal(got, []byte("hello")) {
-			t.Fatalf("uploaded = %q, err=%v", got, err)
-		}
-		_, _ = w.Write([]byte(`{"code":0,"data":{"download_url":"https://files.test/hello"}}`))
 	}))
 	defer server.Close()
 
@@ -108,7 +173,7 @@ func TestUploadFileStreamsMultipartAndChecksHTTPStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	url, err := NewWithEndpoints("secret", "https://gateway.test", server.URL).UploadFile(context.Background(), "hello.txt", path)
-	if err != nil || url != "https://files.test/hello" {
+	if err != nil || url != "https://files.test/dedup" {
 		t.Fatalf("UploadFile() = %q, %v", url, err)
 	}
 }
@@ -182,7 +247,13 @@ func TestMediaTransportLifecycleWithMockGateway(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/models":
 			_, _ = w.Write([]byte(`{"data":[{"id":"image-1","model_id":"model-1","model_type":"image"}]}`))
-		case "/api/v1/files":
+		case "/api/v1/files/presigned":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"file_id":"f1","upload_url":"` + serverURL + `/put/f1","status":"pending"}}`))
+		case "/put/f1":
+			// 预签名 PUT 目标，200 空响应即可
+		case "/api/v1/files/f1/completion":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"status":"completed"}}`))
+		case "/api/v1/files/f1/link":
 			_, _ = w.Write([]byte(`{"code":0,"data":{"download_url":"` + serverURL + `/input.png"}}`))
 		case "/v1/images/generations":
 			_, _ = w.Write([]byte(`{"data":{"task_id":"task-1"}}`))
