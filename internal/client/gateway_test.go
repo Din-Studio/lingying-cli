@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -151,6 +152,87 @@ func TestUploadFilePresignedSmallFlow(t *testing.T) {
 	}
 	if !completed {
 		t.Fatal("completion was not called")
+	}
+}
+
+func TestUploadFilePresignedMultipart(t *testing.T) {
+	oldThreshold, oldPart, oldConc := multipartThreshold, uploadPartSize, uploadConcurrency
+	multipartThreshold, uploadPartSize, uploadConcurrency = 8, 4, 2
+	defer func() {
+		multipartThreshold, uploadPartSize, uploadConcurrency = oldThreshold, oldPart, oldConc
+	}()
+
+	var mu sync.Mutex
+	putBodies := map[string][]byte{} // part number → bytes
+	var completedParts []struct {
+		PartNumber int    `json:"part_number"`
+		ETag       string `json:"etag"`
+	}
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api/v1/files/multipart":
+			var req struct {
+				Name string `json:"name"`
+				Size int64  `json:"size"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req.Name != "big.bin" || req.Size != 10 {
+				t.Errorf("multipart init = %+v", req)
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"file_id":"f-3"}}`))
+		case r.Method == "POST" && r.URL.Path == "/api/v1/files/f-3/multipart/parts":
+			var req struct {
+				PartNumber int `json:"part_number"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"code":0,"data":{"part_number":%d,"upload_url":"%s/put/part/%d"}}`, req.PartNumber, serverURL, req.PartNumber)))
+		case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/put/part/"):
+			n := strings.TrimPrefix(r.URL.Path, "/put/part/")
+			body, _ := io.ReadAll(r.Body)
+			putBodies[n] = body
+			w.Header().Set("ETag", `"etag-`+n+`"`)
+		case r.Method == "POST" && r.URL.Path == "/api/v1/files/f-3/multipart/completion":
+			var req struct {
+				Parts []struct {
+					PartNumber int    `json:"part_number"`
+					ETag       string `json:"etag"`
+				} `json:"parts"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			completedParts = req.Parts
+			_, _ = w.Write([]byte(`{"code":0,"data":{"status":"completed"}}`))
+		case r.Method == "GET" && r.URL.Path == "/api/v1/files/f-3/link":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"download_url":"https://files.test/big"}}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	path := filepath.Join(t.TempDir(), "big.bin")
+	if err := os.WriteFile(path, []byte("0123456789"), 0600); err != nil { // 10 字节 → 3 片：4+4+2
+		t.Fatal(err)
+	}
+	url, err := NewWithEndpoints("secret", "https://gateway.test", server.URL).UploadFile(context.Background(), "big.bin", path)
+	if err != nil || url != "https://files.test/big" {
+		t.Fatalf("UploadFile() = %q, %v", url, err)
+	}
+	if string(putBodies["1"]) != "0123" || string(putBodies["2"]) != "4567" || string(putBodies["3"]) != "89" {
+		t.Fatalf("part bodies = %#v", putBodies)
+	}
+	if len(completedParts) != 3 {
+		t.Fatalf("completed parts = %#v", completedParts)
+	}
+	for i, p := range completedParts {
+		want := fmt.Sprintf(`"etag-%d"`, i+1)
+		if p.PartNumber != i+1 || p.ETag != want {
+			t.Fatalf("part %d = %+v, want etag %s", i, p, want)
+		}
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -529,9 +530,102 @@ func (c *Client) uploadSmall(ctx context.Context, file *os.File, name, contentTy
 	return init.FileID, nil
 }
 
-// uploadMultipart 在后续任务中实现分片路径。
+// uploadMultipart 分片预签名上传：init → 每片取 URL 并 PUT（收集 ETag）→ completion。
+// 每个 worker 独立打开 fd 并按跨步处理分片索引，读之间互不竞争；任一片失败
+// 记录首个错误并停止其余工作。
 func (c *Client) uploadMultipart(ctx context.Context, localPath, name, contentType string, size int64) (string, error) {
-	return "", fmt.Errorf("分片上传未实现")
+	var init struct {
+		FileID string `json:"file_id"`
+	}
+	err := c.fileAPI(ctx, http.MethodPost, "/api/v1/files/multipart", map[string]any{
+		"name":         name,
+		"size":         size,
+		"content_type": contentType,
+	}, &init)
+	if err != nil {
+		return "", err
+	}
+
+	type completedPart struct {
+		PartNumber int    `json:"part_number"`
+		ETag       string `json:"etag"`
+	}
+	numParts := int((size + uploadPartSize - 1) / uploadPartSize)
+	parts := make([]completedPart, numParts)
+
+	conc := uploadConcurrency
+	if conc > numParts {
+		conc = numParts
+	}
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
+	)
+	setErr := func(e error) {
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = e
+		}
+		mu.Unlock()
+	}
+	stopped := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return firstErr != nil
+	}
+
+	wg.Add(conc)
+	for w := 0; w < conc; w++ {
+		go func(start int) {
+			defer wg.Done()
+			f, err := os.Open(localPath)
+			if err != nil {
+				setErr(fmt.Errorf("打开上传文件失败: %w", err))
+				return
+			}
+			defer f.Close()
+			for idx := start; idx < numParts; idx += conc {
+				if stopped() {
+					return
+				}
+				offset := int64(idx) * uploadPartSize
+				length := uploadPartSize
+				if offset+length > size {
+					length = size - offset
+				}
+				var part struct {
+					UploadURL string `json:"upload_url"`
+				}
+				err := c.fileAPI(ctx, http.MethodPost, "/api/v1/files/"+init.FileID+"/multipart/parts", map[string]any{
+					"file_id":     init.FileID,
+					"part_number": idx + 1,
+				}, &part)
+				if err != nil {
+					setErr(err)
+					return
+				}
+				etag, err := c.putPresigned(ctx, part.UploadURL, contentType, io.NewSectionReader(f, offset, length), length)
+				if err != nil {
+					setErr(err)
+					return
+				}
+				parts[idx] = completedPart{PartNumber: idx + 1, ETag: etag}
+			}
+		}(w)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return "", firstErr
+	}
+
+	if err := c.fileAPI(ctx, http.MethodPost, "/api/v1/files/"+init.FileID+"/multipart/completion", map[string]any{
+		"file_id": init.FileID,
+		"parts":   parts,
+	}, nil); err != nil {
+		return "", err
+	}
+	return init.FileID, nil
 }
 
 // putPresigned 把 body PUT 到预签名 URL。不带应用鉴权头（URL 自鉴权）。
