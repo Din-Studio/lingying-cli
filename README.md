@@ -40,15 +40,6 @@ ly --help
 
 重新打开 PowerShell 或 Windows Terminal 以获取更新后的 PATH。校验和、下载或解压失败时安装器会直接失败，不会安装未经校验的二进制。
 
-### npm：macOS、Linux 和 Windows（可选）
-
-需要 Node.js 16 或更高版本。npm 安装包会下载并校验当前平台的二进制；Windows 原生环境优先使用上方 PowerShell 安装器。
-
-```bash
-npm install -g lingying-cli
-ly --help
-```
-
 ### Go
 
 需要 Go 1.26.2 或更高版本。
@@ -216,7 +207,7 @@ LY_CONFIG_FILE=./ly-config.json ly auth show
 
 ## Agent 集成
 
-仓库和 npm 包都包含 [`skills/SKILL.md`](skills/SKILL.md)，可显式复制或安装到所使用 Agent 的 skills 目录。CLI 不会自动改写 OpenClaw、Codex 或其他 Agent 的工作区规则。
+仓库包含 [`skills/SKILL.md`](skills/SKILL.md)，可显式复制或安装到所使用 Agent 的 skills 目录。CLI 不会自动改写 OpenClaw、Codex 或其他 Agent 的工作区规则。
 
 为 Agent 或脚本使用 `--json`。成功和失败均在 stdout 输出一个 JSON 信封；进度信息写入 stderr。失败以非零状态码退出。
 
