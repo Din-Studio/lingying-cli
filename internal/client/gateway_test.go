@@ -260,6 +260,55 @@ func TestUploadFilePresignedDedupSkipsPut(t *testing.T) {
 	}
 }
 
+func TestUploadFilePresignedPutFailure(t *testing.T) {
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /api/v1/files/presigned":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"file_id":"f-4","upload_url":"` + serverURL + `/put/f-4","status":"pending"}}`))
+		case "PUT /put/f-4":
+			http.Error(w, "denied", http.StatusForbidden)
+		default:
+			t.Errorf("unexpected request after PUT failure: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	path := filepath.Join(t.TempDir(), "hello.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewWithEndpoints("secret", "https://gateway.test", server.URL).UploadFile(context.Background(), "hello.txt", path)
+	if err == nil || !strings.Contains(err.Error(), "预签名 PUT HTTP 403") {
+		t.Fatalf("err = %v, want 预签名 PUT HTTP 403", err)
+	}
+}
+
+func TestUploadFileEmptyDownloadLinkFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /api/v1/files/presigned":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"file_id":"f-5","status":"completed","deduplicated":true}}`))
+		case "GET /api/v1/files/f-5/link":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"download_url":""}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "hello.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewWithEndpoints("secret", "https://gateway.test", server.URL).UploadFile(context.Background(), "hello.txt", path)
+	if err == nil || !strings.Contains(err.Error(), "下载链接为空") {
+		t.Fatalf("err = %v, want 下载链接为空", err)
+	}
+}
+
 func TestDownloadPreservesDestinationOnHTTPFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
