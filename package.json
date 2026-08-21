@@ -1,6 +1,6 @@
 {
   "name": "lingying-cli",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Lingying Gateway CLI — AI 模型网关命令行工具",
   "bin": {
     "ly": "scripts/run.js"
