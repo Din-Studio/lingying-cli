@@ -137,7 +137,7 @@ ly video --model seedance2.0 -p "镜头推进" --param 'images=["https://example
 
 未知的顶层字段仍保留为字符串，由 Gateway 校验；未声明的嵌套路径会在 CLI 端报错，因为它无法表示为合法嵌套请求。CLI 会补齐缺失的“必填且带 default”字段，用户传入的值优先；不做完整本地 schema 校验。位置提示词中的 `=` 会保持为提示词文本，额外字段请始终显式使用 `--param`。
 
-输入既可以是本地路径，也可以是 `http://` 或 `https://` URL。URL 输入可使用 OAuth 或 API Key；本地输入需要 OAuth，CLI 会通过 `file.echojoy.cn` 的预签名上传链路上传：文件小于 50 MiB 时走单次预签名 PUT（`POST /api/v1/files/presigned` 获取直传链接后一次性 PUT），大于等于 50 MiB 时自动切换为分片上传（`POST /api/v1/files/multipart` 初始化 → 按 5 MiB 分片并发 PUT 各分片 → `POST /api/v1/files/{file_id}/multipart/completion` 完成合并）。对同时支持图片和视频输入的模型（如 Seedance），CLI 按文件扩展名将 `-i` 文件放入 `images` 或 `videos` 字段。单个本地文件上限为 **1 GiB**。
+输入既可以是本地路径，也可以是 `http://` 或 `https://` URL。URL 输入可使用 OAuth 或 API Key；本地输入需要 OAuth，CLI 会自动上传：小文件走单次直传，大文件（≥50 MiB）自动切换为分片上传。对同时支持图片和视频输入的模型（如 Seedance），CLI 按文件扩展名将 `-i` 文件放入 `images` 或 `videos` 字段。单个本地文件上限为 **1 GiB**。
 
 ### 异步任务、下载和恢复
 
