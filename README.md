@@ -139,6 +139,17 @@ ly video --model seedance2.0 -p "镜头推进" --param 'images=["https://example
 
 输入既可以是本地路径，也可以是 `http://` 或 `https://` URL。URL 输入可使用 OAuth 或 API Key；本地输入需要 OAuth，CLI 会自动上传：小文件走单次直传，大文件（≥50 MiB）自动切换为分片上传。对同时支持图片和视频输入的模型（如 Seedance），CLI 按文件扩展名将 `-i` 文件放入 `images` 或 `videos` 字段。单个本地文件上限为 **1 GiB**。
 
+```bash
+# 本地小文件（<50 MiB）：单次直传
+ly image -i ./photo.jpg -p "转换成水彩画风格"
+
+# 本地大文件（≥50 MiB）：CLI 自动切换为分片上传，无需额外参数
+ly video -i ./raw-footage.mp4 -p "剪辑成 15 秒预告片"
+
+# 远程 URL 输入无需上传，可直接使用 API Key
+ly image -i https://example.com/photo.jpg -p "转换成水彩画风格"
+```
+
 ### 异步任务、下载和恢复
 
 媒体命令默认执行“提交 → 轮询 → 下载”。成功后会打印 `OUTPUT_FILE`；未指定 `--output` 时，结果保存到默认输出目录（默认为 `~/ly-output`）。
