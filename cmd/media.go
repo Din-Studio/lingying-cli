@@ -366,6 +366,11 @@ var (
 var imageCmd = &cobra.Command{
 	Use:   "image",
 	Short: "图片生成和编辑",
+	Long: `图片生成和编辑
+
+-i 支持本地路径或 URL。本地文件需要 OAuth 登录，由 CLI 自动上传：
+小于 50 MiB 走单次预签名 PUT，大于等于 50 MiB 自动切分为分片（预签名 multipart）并发上传。
+单个本地文件上限为 1 GiB。`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		p := getPromptFromArgs(args)
 		if p != "" {
@@ -390,6 +395,11 @@ var (
 var videoCmd = &cobra.Command{
 	Use:   "video",
 	Short: "视频生成和编辑",
+	Long: `视频生成和编辑
+
+-i 支持本地路径或 URL。本地文件需要 OAuth 登录，由 CLI 自动上传：
+小于 50 MiB 走单次预签名 PUT，大于等于 50 MiB 自动切分为分片（预签名 multipart）并发上传。
+单个本地文件上限为 1 GiB。`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		p := getPromptFromArgs(args)
 		if p != "" {
@@ -414,6 +424,11 @@ var (
 var audioCmd = &cobra.Command{
 	Use:   "audio",
 	Short: "音频生成",
+	Long: `音频生成
+
+-i 支持本地路径或 URL。本地文件需要 OAuth 登录，由 CLI 自动上传：
+小于 50 MiB 走单次预签名 PUT，大于等于 50 MiB 自动切分为分片（预签名 multipart）并发上传。
+单个本地文件上限为 1 GiB。`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		p := getPromptFromArgs(args)
 		if p != "" {
@@ -627,21 +642,21 @@ func ensureOutputParent(path string) error {
 
 func init() {
 	imageCmd.Flags().StringVarP(&imageModelFlag, "model", "m", "", "模型 ID 或名称")
-	imageCmd.Flags().StringArrayVarP(&imageInputFiles, "image", "i", nil, "输入图片 (可重复)")
+	imageCmd.Flags().StringArrayVarP(&imageInputFiles, "image", "i", nil, "输入图片 (可重复；本地文件 ≥50MiB 自动分片上传)")
 	imageCmd.Flags().StringArrayVar(&imageParamFlags, "param", nil, "附加参数 key=value (可重复)")
 	imageCmd.Flags().StringVarP(&imageOutPath, "output", "o", "", "输出文件路径")
 	imageCmd.Flags().StringVarP(&imagePromptFlag, "prompt", "p", "", "提示词")
 	imageCmd.Flags().BoolVar(&imageNoWait, "no-wait", false, "提交任务后立即返回 task_id")
 
 	videoCmd.Flags().StringVarP(&videoModelFlag, "model", "m", "", "模型 ID 或名称")
-	videoCmd.Flags().StringArrayVarP(&videoInputFiles, "image", "i", nil, "输入图片/视频 (可重复)")
+	videoCmd.Flags().StringArrayVarP(&videoInputFiles, "image", "i", nil, "输入图片/视频 (可重复；本地文件 ≥50MiB 自动分片上传)")
 	videoCmd.Flags().StringArrayVar(&videoParamFlags, "param", nil, "附加参数 key=value (可重复)")
 	videoCmd.Flags().StringVarP(&videoOutPath, "output", "o", "", "输出文件路径")
 	videoCmd.Flags().StringVarP(&videoPromptFlag, "prompt", "p", "", "提示词")
 	videoCmd.Flags().BoolVar(&videoNoWait, "no-wait", false, "提交任务后立即返回 task_id")
 
 	audioCmd.Flags().StringVarP(&audioModelFlag, "model", "m", "", "模型 ID 或名称")
-	audioCmd.Flags().StringArrayVarP(&audioInputFiles, "audio", "i", nil, "输入音频 (可重复)")
+	audioCmd.Flags().StringArrayVarP(&audioInputFiles, "audio", "i", nil, "输入音频 (可重复；本地文件 ≥50MiB 自动分片上传)")
 	audioCmd.Flags().StringArrayVar(&audioParamFlags, "param", nil, "附加参数 key=value (可重复)")
 	audioCmd.Flags().StringVarP(&audioOutPath, "output", "o", "", "输出文件路径")
 	audioCmd.Flags().StringVarP(&audioPromptFlag, "prompt", "p", "", "提示词")
