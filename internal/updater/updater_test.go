@@ -7,34 +7,59 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
+// testUpdater points an Updater at a local server, with a throwaway file
+// standing in for the running executable. GOOS/GOARCH stay at their real
+// values so Apply exercises the same asset name and smoke test as production.
 func testUpdater(t *testing.T, handler http.Handler) (*Updater, string) {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
 	dir := t.TempDir()
-	exec := filepath.Join(dir, "ly")
-	if err := os.WriteFile(exec, []byte("old binary"), 0o755); err != nil {
+	target := filepath.Join(dir, "ly")
+	if err := os.WriteFile(target, []byte("old binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return &Updater{
 		Current:     "0.1.5",
-		ExecPath:    exec,
+		ExecPath:    target,
 		HTTP:        server.Client(),
 		ManifestURL: server.URL + "/version.json",
 		ReleaseAPI:  server.URL + "/releases/latest",
 		ReleaseBase: server.URL + "/download",
-		GOOS:        "linux",
-		GOARCH:      "amd64",
+		GOOS:        runtime.GOOS,
+		GOARCH:      runtime.GOARCH,
 	}, server.URL
+}
+
+// testAsset mirrors Updater.assetName for the platform the test runs on.
+func testAsset(version string) string {
+	return fmt.Sprintf("ly-%s-%s-%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)
+}
+
+// fakeBinary is a runnable stand-in for a released ly: it answers --version
+// the way cobra does, so the pre-swap smoke test sees a real process.
+func fakeBinary(version string) string {
+	return "#!/bin/sh\necho \"ly version " + version + "\"\n"
+}
+
+// requirePOSIXShell skips tests that rely on fakeBinary being executable.
+func requirePOSIXShell(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fakeBinary is a POSIX shell script")
+	}
 }
 
 // tarGz builds a release archive shaped like goreleaser's: the binary sits
@@ -178,26 +203,35 @@ func TestExpectedChecksum(t *testing.T) {
 
 // ── Apply ──
 
-func TestApplyReplacesExecutable(t *testing.T) {
-	archive := tarGz(t, "ly", "new binary")
-	up, _ := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// serveRelease answers checksums.txt and the archive for `version`, and 404s
+// everything else.
+func serveRelease(version string, archive []byte) http.HandlerFunc {
+	asset := testAsset(version)
+	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/download/v0.2.0/checksums.txt":
-			w.Write([]byte(sha256Hex(archive) + "  ly-0.2.0-linux-amd64.tar.gz\n"))
-		case "/download/v0.2.0/ly-0.2.0-linux-amd64.tar.gz":
+		case "/download/v" + version + "/checksums.txt":
+			w.Write([]byte(sha256Hex(archive) + "  " + asset + "\n"))
+		case "/download/v" + version + "/" + asset:
 			w.Write(archive)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
-	}))
+	}
+}
+
+func TestApplyReplacesExecutable(t *testing.T) {
+	requirePOSIXShell(t)
+	binary := fakeBinary("0.2.0")
+	archive := tarGz(t, "ly", binary)
+	up, _ := testUpdater(t, serveRelease("0.2.0", archive))
 
 	if err := up.Apply(context.Background(), "0.2.0"); err != nil {
 		t.Fatalf("Apply() = %v", err)
 	}
 
 	got, err := os.ReadFile(up.ExecPath)
-	if err != nil || string(got) != "new binary" {
-		t.Fatalf("executable content = %q, %v; want %q", got, err, "new binary")
+	if err != nil || string(got) != binary {
+		t.Fatalf("executable content = %q, %v; want %q", got, err, binary)
 	}
 	info, err := os.Stat(up.ExecPath)
 	if err != nil || info.Mode().Perm()&0o111 == 0 {
@@ -211,30 +245,49 @@ func TestApplyReplacesExecutable(t *testing.T) {
 }
 
 func TestApplyAcceptsVersionWithVPrefix(t *testing.T) {
-	archive := tarGz(t, "ly", "new binary")
-	up, _ := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/download/v0.2.0/checksums.txt":
-			w.Write([]byte(sha256Hex(archive) + "  ly-0.2.0-linux-amd64.tar.gz\n"))
-		case "/download/v0.2.0/ly-0.2.0-linux-amd64.tar.gz":
-			w.Write(archive)
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
+	requirePOSIXShell(t)
+	archive := tarGz(t, "ly", fakeBinary("0.2.0"))
+	up, _ := testUpdater(t, serveRelease("0.2.0", archive))
 
 	if err := up.Apply(context.Background(), "v0.2.0"); err != nil {
 		t.Fatalf("Apply(v0.2.0) = %v", err)
 	}
 }
 
+// A binary that cannot run, or reports a version other than the one we asked
+// for, means the release is broken. Keep the working ly rather than install it.
+func TestApplyAbortsWhenStagedBinaryFailsSmokeTest(t *testing.T) {
+	requirePOSIXShell(t)
+	cases := map[string]string{
+		"exits non-zero": "#!/bin/sh\nexit 1\n",
+		"wrong version":  fakeBinary("0.1.9"),
+		"not executable": "this is not a program",
+	}
+	for name, binary := range cases {
+		t.Run(name, func(t *testing.T) {
+			archive := tarGz(t, "ly", binary)
+			up, _ := testUpdater(t, serveRelease("0.2.0", archive))
+
+			err := up.Apply(context.Background(), "0.2.0")
+			if err == nil || !strings.Contains(err.Error(), "已保留当前版本") {
+				t.Fatalf("Apply() = %v, want smoke-test failure", err)
+			}
+			got, _ := os.ReadFile(up.ExecPath)
+			if string(got) != "old binary" {
+				t.Fatalf("executable was replaced by a broken build: %q", got)
+			}
+		})
+	}
+}
+
 func TestApplyAbortsOnChecksumMismatch(t *testing.T) {
 	archive := tarGz(t, "ly", "tampered binary")
+	asset := testAsset("0.2.0")
 	up, _ := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/download/v0.2.0/checksums.txt":
-			w.Write([]byte(strings.Repeat("a", 64) + "  ly-0.2.0-linux-amd64.tar.gz\n"))
-		case "/download/v0.2.0/ly-0.2.0-linux-amd64.tar.gz":
+			w.Write([]byte(strings.Repeat("a", 64) + "  " + asset + "\n"))
+		case "/download/v0.2.0/" + asset:
 			w.Write(archive)
 		}
 	}))
@@ -251,14 +304,7 @@ func TestApplyAbortsOnChecksumMismatch(t *testing.T) {
 
 func TestApplyFailsWhenArchiveLacksBinary(t *testing.T) {
 	archive := tarGz(t, "something-else", "not ly")
-	up, _ := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/download/v0.2.0/checksums.txt":
-			w.Write([]byte(sha256Hex(archive) + "  ly-0.2.0-linux-amd64.tar.gz\n"))
-		case "/download/v0.2.0/ly-0.2.0-linux-amd64.tar.gz":
-			w.Write(archive)
-		}
-	}))
+	up, _ := testUpdater(t, serveRelease("0.2.0", archive))
 
 	if err := up.Apply(context.Background(), "0.2.0"); err == nil {
 		t.Fatal("Apply() = nil, want missing-binary error")
@@ -309,6 +355,30 @@ func TestReplaceExecutableWindowsMovesOldBinaryAside(t *testing.T) {
 	got, err := os.ReadFile(target)
 	if err != nil || string(got) != "new" {
 		t.Fatalf("target = %q, %v; want %q", got, err, "new")
+	}
+}
+
+// ── Timeouts ──
+
+// A version lookup must not hang for as long as a multi-megabyte download is
+// allowed to, so each request carries its own deadline rather than sharing one
+// client-level timeout.
+func TestFetchWithinAppliesPerRequestDeadline(t *testing.T) {
+	release := make(chan struct{})
+	up, url := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	// Deferred here, not via t.Cleanup: the handler must be unblocked before
+	// testUpdater's own cleanup calls server.Close, which waits on it.
+	defer close(release)
+
+	start := time.Now()
+	_, err := up.fetchWithin(context.Background(), url+"/version.json", 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("fetchWithin() = nil error, want deadline exceeded")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("fetchWithin() blocked for %v, want the 50ms deadline to apply", elapsed)
 	}
 }
 

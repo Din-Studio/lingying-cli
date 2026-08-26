@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -35,6 +36,13 @@ const (
 	// devVersion marks a binary built without the release ldflags. It carries
 	// no comparable version, so any published release counts as newer.
 	devVersion = "dev"
+
+	// Version lookups fetch a few dozen bytes; a download is a few megabytes.
+	// Separate budgets keep `ly update --check` from hanging on a dead network
+	// for as long as a real download is allowed to take.
+	versionTimeout  = 10 * time.Second
+	downloadTimeout = 120 * time.Second
+	verifyTimeout   = 10 * time.Second
 )
 
 // Updater holds everything the update flow needs. The URL and platform fields
@@ -61,9 +69,10 @@ func New(current string) (*Updater, error) {
 		exe = resolved
 	}
 	return &Updater{
-		Current:     current,
-		ExecPath:    exe,
-		HTTP:        &http.Client{Timeout: 120 * time.Second},
+		Current:  current,
+		ExecPath: exe,
+		// No client-level timeout: each request carries its own deadline.
+		HTTP:        &http.Client{},
 		ManifestURL: defaultManifestURL,
 		ReleaseAPI:  defaultReleaseAPI,
 		ReleaseBase: defaultReleaseBase,
@@ -87,7 +96,7 @@ func (u *Updater) LatestVersion(ctx context.Context) (string, error) {
 }
 
 func (u *Updater) versionFromManifest(ctx context.Context) (string, error) {
-	body, err := u.fetch(ctx, u.ManifestURL)
+	body, err := u.fetchWithin(ctx, u.ManifestURL, versionTimeout)
 	if err != nil {
 		return "", err
 	}
@@ -101,7 +110,7 @@ func (u *Updater) versionFromManifest(ctx context.Context) (string, error) {
 }
 
 func (u *Updater) versionFromReleaseAPI(ctx context.Context) (string, error) {
-	body, err := u.fetch(ctx, u.ReleaseAPI)
+	body, err := u.fetchWithin(ctx, u.ReleaseAPI, versionTimeout)
 	if err != nil {
 		return "", err
 	}
@@ -143,7 +152,7 @@ func (u *Updater) Apply(ctx context.Context, version string) error {
 	asset := u.assetName(version)
 	base := fmt.Sprintf("%s/v%s", u.ReleaseBase, version)
 
-	sums, err := u.fetch(ctx, base+"/checksums.txt")
+	sums, err := u.fetchWithin(ctx, base+"/checksums.txt", downloadTimeout)
 	if err != nil {
 		return fmt.Errorf("下载校验和失败: %w", err)
 	}
@@ -152,7 +161,7 @@ func (u *Updater) Apply(ctx context.Context, version string) error {
 		return err
 	}
 
-	archive, err := u.fetch(ctx, base+"/"+asset)
+	archive, err := u.fetchWithin(ctx, base+"/"+asset, downloadTimeout)
 	if err != nil {
 		return fmt.Errorf("下载 %s 失败: %w", asset, err)
 	}
@@ -167,7 +176,29 @@ func (u *Updater) Apply(ctx context.Context, version string) error {
 	if err := os.Chmod(stagedPath, 0o755); err != nil {
 		return err
 	}
+	if err := verifyStaged(ctx, stagedPath, version); err != nil {
+		return err
+	}
 	return replaceExecutable(stagedPath, u.ExecPath, u.GOOS == "windows")
+}
+
+// verifyStaged runs the downloaded binary before it takes over. The checksum
+// proves the download matches what was published; it cannot prove the
+// published artifact runs on this machine. Without this check a bad release
+// leaves the user with a broken ly and no working `ly update` to recover with.
+func verifyStaged(ctx context.Context, path, version string) error {
+	ctx, cancel := context.WithTimeout(ctx, verifyTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("新版本无法运行，已保留当前版本: %w", err)
+	}
+	if !strings.Contains(string(out), version) {
+		return fmt.Errorf("新版本自报版本号不符（期望 %s，实际 %q），已保留当前版本",
+			version, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func (u *Updater) assetName(version string) string {
@@ -185,7 +216,10 @@ func (u *Updater) binaryName() string {
 	return "ly"
 }
 
-func (u *Updater) fetch(ctx context.Context, url string) ([]byte, error) {
+func (u *Updater) fetchWithin(ctx context.Context, url string, timeout time.Duration) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
