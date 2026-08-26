@@ -14,7 +14,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,33 +28,32 @@ import (
 )
 
 const (
-	defaultManifestURL = "https://raw.githubusercontent.com/Din-Studio/lingying-cli/main/scripts/version.json"
-	defaultReleaseAPI  = "https://api.github.com/repos/Din-Studio/lingying-cli/releases/latest"
-	defaultReleaseBase = "https://github.com/Din-Studio/lingying-cli/releases/download"
+	defaultRepo = "Din-Studio/lingying-cli"
 
 	// devVersion marks a binary built without the release ldflags. It carries
 	// no comparable version, so any published release counts as newer.
 	devVersion = "dev"
 
-	// Version lookups fetch a few dozen bytes; a download is a few megabytes.
-	// Separate budgets keep `ly update --check` from hanging on a dead network
-	// for as long as a real download is allowed to take.
-	versionTimeout  = 10 * time.Second
+	// 版本发现只读一个 302 响应头，给它短超时。归档下载则不设总时长上限——
+	// 那会在慢链路上把大文件硬砍断；改由 download.go 的停滞检测负责。
+	versionTimeout = 10 * time.Second
+	verifyTimeout  = 10 * time.Second
+
+	// downloadTimeout 是一个总时长上限，在慢链路上会把大文件硬砍断。
+	// 它随下一步引入的停滞检测下载器一并移除。
 	downloadTimeout = 120 * time.Second
-	verifyTimeout   = 10 * time.Second
 )
 
-// Updater holds everything the update flow needs. The URL and platform fields
-// are configurable so tests can point at a local server.
+// Updater holds everything the update flow needs. Repo, Sources and the
+// platform fields are configurable so tests can point at a local server.
 type Updater struct {
-	Current     string
-	ExecPath    string
-	HTTP        *http.Client
-	ManifestURL string
-	ReleaseAPI  string
-	ReleaseBase string
-	GOOS        string
-	GOARCH      string
+	Current  string
+	ExecPath string
+	HTTP     *http.Client
+	Repo     string
+	Sources  []Source
+	GOOS     string
+	GOARCH   string
 }
 
 // New resolves the running executable — following symlinks so that a
@@ -72,55 +70,61 @@ func New(current string) (*Updater, error) {
 		Current:  current,
 		ExecPath: exe,
 		// No client-level timeout: each request carries its own deadline.
-		HTTP:        &http.Client{},
-		ManifestURL: defaultManifestURL,
-		ReleaseAPI:  defaultReleaseAPI,
-		ReleaseBase: defaultReleaseBase,
-		GOOS:        runtime.GOOS,
-		GOARCH:      runtime.GOARCH,
+		HTTP:    &http.Client{},
+		Repo:    defaultRepo,
+		Sources: Sources(),
+		GOOS:    runtime.GOOS,
+		GOARCH:  runtime.GOARCH,
 	}, nil
 }
 
-// LatestVersion prefers scripts/version.json — the same manifest install.sh
-// reads, so both paths agree on what "latest" means — and falls back to the
-// GitHub Releases API when the manifest is unreachable or malformed.
+// LatestVersion 读取 releases/latest 的 302 跳转目标。该地址的 Location 形如
+// .../releases/tag/v0.1.6，一次请求即可拿到版本号——既不需要
+// raw.githubusercontent.com 上的清单，也不需要 api.github.com。
 func (u *Updater) LatestVersion(ctx context.Context) (string, error) {
-	if version, err := u.versionFromManifest(ctx); err == nil {
-		return version, nil
+	var lastErr error
+	for _, src := range u.Sources {
+		version, err := u.latestFrom(ctx, src)
+		if err == nil {
+			return version, nil
+		}
+		lastErr = err
 	}
-	version, err := u.versionFromReleaseAPI(ctx)
-	if err != nil {
-		return "", fmt.Errorf("无法获取最新版本: %w", err)
-	}
-	return version, nil
+	return "", fmt.Errorf("无法获取最新版本: %w", lastErr)
 }
 
-func (u *Updater) versionFromManifest(ctx context.Context) (string, error) {
-	body, err := u.fetchWithin(ctx, u.ManifestURL, versionTimeout)
-	if err != nil {
-		return "", err
-	}
-	var manifest struct {
-		Version string `json:"version"`
-	}
-	if err := json.Unmarshal(body, &manifest); err != nil {
-		return "", err
-	}
-	return validVersion(manifest.Version)
-}
+func (u *Updater) latestFrom(ctx context.Context, src Source) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, versionTimeout)
+	defer cancel()
 
-func (u *Updater) versionFromReleaseAPI(ctx context.Context) (string, error) {
-	body, err := u.fetchWithin(ctx, u.ReleaseAPI, versionTimeout)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src.LatestTagURL(u.Repo), nil)
 	if err != nil {
 		return "", err
 	}
-	var release struct {
-		TagName string `json:"tag_name"`
+	req.Header.Set("User-Agent", "ly-cli-updater")
+
+	// 只在这里禁用重定向跟随——我们要读的就是 Location 头。用副本而非改动
+	// u.HTTP，否则归档下载也会被打断：GitHub 的 releases/download 本身就要
+	// 跳转到 objects.githubusercontent.com。
+	client := *u.HTTP
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
-	if err := json.Unmarshal(body, &release); err != nil {
+	resp, err := client.Do(req)
+	if err != nil {
 		return "", err
 	}
-	return validVersion(release.TagName)
+	defer resp.Body.Close()
+
+	location := resp.Header.Get("Location")
+	if location == "" {
+		return "", fmt.Errorf("%s 未返回跳转地址（HTTP %d）", src.Name, resp.StatusCode)
+	}
+	_, tag, found := strings.Cut(location, "/releases/tag/")
+	if !found {
+		return "", fmt.Errorf("%s 的跳转地址无法解析: %q", src.Name, location)
+	}
+	return validVersion(tag)
 }
 
 // NeedsUpdate reports whether latest is worth installing over the running
@@ -150,9 +154,10 @@ func (u *Updater) Apply(ctx context.Context, version string) error {
 	defer os.Remove(stagedPath)
 
 	asset := u.assetName()
-	base := fmt.Sprintf("%s/v%s", u.ReleaseBase, version)
+	// 暂时只用首个来源，行为与改造前一致；多源回退与信任分级随后接入。
+	src := u.Sources[0]
 
-	sums, err := u.fetchWithin(ctx, base+"/checksums.txt", downloadTimeout)
+	sums, err := u.fetchWithin(ctx, src.AssetURL(u.Repo, version, "checksums.txt"), downloadTimeout)
 	if err != nil {
 		return fmt.Errorf("下载校验和失败: %w", err)
 	}
@@ -161,7 +166,7 @@ func (u *Updater) Apply(ctx context.Context, version string) error {
 		return err
 	}
 
-	archive, err := u.fetchWithin(ctx, base+"/"+asset, downloadTimeout)
+	archive, err := u.fetchWithin(ctx, src.AssetURL(u.Repo, version, asset), downloadTimeout)
 	if err != nil {
 		return fmt.Errorf("下载 %s 失败: %w", asset, err)
 	}
