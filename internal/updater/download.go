@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -32,13 +33,20 @@ type downloader struct {
 }
 
 func newDownloader() *downloader {
+	// 必须克隆 DefaultTransport 而不是新建一个：DefaultTransport 自带
+	// Proxy: ProxyFromEnvironment，自建则会丢掉它。而必须经系统代理才能访问
+	// GitHub 的用户，正是镜像回退要服务的那批人——丢掉代理等于断了他们的路。
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSHandshakeTimeout = 15 * time.Second
+	tr.ResponseHeaderTimeout = 30 * time.Second
+	// 拨号必须有超时：ResponseHeaderTimeout 要等连上才生效，连接被黑洞时
+	// 永远等不到，命令会无限挂起而不是失败换源。
+	tr.DialContext = (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+
 	return &downloader{
 		client: &http.Client{
 			// 不设 Client.Timeout：总时长上限正是要避免的东西。
-			Transport: &http.Transport{
-				TLSHandshakeTimeout:   15 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
-			},
+			Transport: tr,
 		},
 		attempts:    3,
 		maxAttempts: 20,

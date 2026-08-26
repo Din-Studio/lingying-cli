@@ -194,6 +194,42 @@ func TestFetchDoesNotRetryOnNotFound(t *testing.T) {
 	}
 }
 
+// 自建 Transport 会丢掉 http.DefaultTransport 自带的 ProxyFromEnvironment。
+// 而必须经系统代理才能访问 GitHub 的用户，正是镜像回退要服务的那批人——
+// 丢掉代理等于直接把他们的路断了，且表现为无限挂起而非报错。
+func TestDownloaderHonoursEnvironmentProxy(t *testing.T) {
+	tr, ok := newDownloader().client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport", newDownloader().client.Transport)
+	}
+	// 只断言 Proxy 已挂上。不断言它解析出的具体地址——ProxyFromEnvironment
+	// 用 sync.Once 缓存环境变量，t.Setenv 是否生效取决于测试执行顺序。
+	if tr.Proxy == nil {
+		t.Fatal("Transport.Proxy = nil, want ProxyFromEnvironment — 代理用户会被断路")
+	}
+	if tr.DialContext == nil {
+		t.Fatal("Transport.DialContext = nil, want a dialer with a connect timeout")
+	}
+}
+
+// 拨号阶段必须有超时：ResponseHeaderTimeout 要等连上才生效，
+// TCP 连接被黑洞时永远等不到，命令就会无限挂起而不是失败。
+func TestFetchFailsRatherThanHangingOnUnreachableHost(t *testing.T) {
+	d := newDownloader()
+	d.attempts = 1
+	d.retryDelay = 0
+
+	start := time.Now()
+	// 192.0.2.0/24 是 RFC 5737 保留的测试网段，不会有主机应答。
+	err := d.fetch(context.Background(), "http://192.0.2.1:81/asset", filepath.Join(t.TempDir(), "a"))
+	if err == nil {
+		t.Fatal("fetch() error = nil, want a dial failure")
+	}
+	if elapsed := time.Since(start); elapsed > 45*time.Second {
+		t.Fatalf("fetch() blocked for %v — 拨号阶段没有超时，命令会无限挂起", elapsed)
+	}
+}
+
 func TestBytesReadsSmallPayloadIntoMemory(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("checksums"))
