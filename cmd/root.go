@@ -41,6 +41,9 @@ var rootCmd = &cobra.Command{
     ly auth set-key <key>  API Key
     ly auth show
 
+  维护:
+    ly update              更新到最新版本
+
   使用 ly <命令> --help 查看详细用法。`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -96,6 +99,7 @@ func init() {
 	rootCmd.AddCommand(videoCmd)
 	rootCmd.AddCommand(audioCmd)
 	rootCmd.AddCommand(modelCmd)
+	rootCmd.AddCommand(updateCmd)
 
 	authCmd.AddCommand(authLoginCmd)
 	authCmd.AddCommand(authSetKeyCmd)
