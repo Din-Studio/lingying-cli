@@ -224,6 +224,11 @@ func (u *Updater) fetchChecksum(ctx context.Context, d *downloader, version, ass
 			if err != nil {
 				continue // 来源不可用，换下一个
 			}
+			// 代理挂掉时常返回 200 加一张 HTML 错误页。那不是确定性答复，
+			// 只说明这个来源不可用；否则一个坏代理就能掐断整条回退链。
+			if !looksLikeChecksums(sums) {
+				continue
+			}
 			sum, err := expectedChecksum(sums, asset)
 			if err != nil {
 				return "", false, err // 确定性答复：资产不存在
@@ -285,6 +290,22 @@ func (u *Updater) binaryName() string {
 		return "ly.exe"
 	}
 	return "ly"
+}
+
+// looksLikeChecksums 判断响应体是否确实是一份 checksums.txt——只要存在一行
+// 「64 位十六进制 + 文件名」即可。用来把「这不是校验和文件」与「是校验和文件
+// 但没有该资产」区分开，两者的正确处置相反。
+func looksLikeChecksums(sums []byte) bool {
+	for _, line := range strings.Split(string(sums), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || len(fields[0]) != 64 {
+			continue
+		}
+		if _, err := hex.DecodeString(fields[0]); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // expectedChecksum pulls the hash for `asset` out of goreleaser's

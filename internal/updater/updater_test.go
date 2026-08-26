@@ -351,6 +351,32 @@ func TestApplyRefusesMirrorChecksumWhenTrustedSourceSaysAssetIsAbsent(t *testing
 	}
 }
 
+// 代理挂掉时常返回 200 加一张 HTML 错误页。那不是「资产不存在」的确定性答复，
+// 只是这个来源不可用，必须继续尝试下一个——否则一个坏代理就能掐断整条回退链。
+func TestApplyTreatsUnparsableChecksumBodyAsSourceFailure(t *testing.T) {
+	requirePOSIXShell(t)
+	archive := tarGz(t, "ly", fakeBinary("0.2.0"))
+
+	up, _ := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/checksums.txt") {
+			w.Write([]byte("<html><body>502 Bad Gateway</body></html>"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	mirror := httptest.NewServer(serveRelease("0.2.0", archive))
+	defer mirror.Close()
+	up.Sources = append(up.Sources, Source{Name: "可用镜像", Base: mirror.URL})
+
+	got, err := up.Apply(context.Background(), "0.2.0")
+	if err != nil {
+		t.Fatalf("Apply() error = %v — 无法解析的响应体应视为来源不可用并换源", err)
+	}
+	if got.ChecksumTrusted {
+		t.Fatalf("ChecksumTrusted = true, want false — 校验和最终来自镜像")
+	}
+}
+
 func TestApplyAbortsOnChecksumMismatch(t *testing.T) {
 	archive := tarGz(t, "ly", "tampered binary")
 	asset := testAsset()

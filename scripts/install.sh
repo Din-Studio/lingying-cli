@@ -64,11 +64,15 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 # checksums.txt 只有几百字节，慢链路上也容易直连成功。先只向直连索取：
 # 校验和一旦来自可信源，归档包就可以安全地走镜像——镜像换不掉包。
+# 每次换源前必须清掉残片：get 带 -C - 断点续传，若上一个来源传了一半就断，
+# 换源后会把新来源的后半段追加到旧残片上，拼出一个损坏的校验和文件。
 TRUSTED=1
+rm -f "${TMP:?}/checksums.txt"
 if ! get "$(asset_url "$DIRECT" checksums.txt)" "$TMP/checksums.txt" 2>/dev/null; then
   TRUSTED=0
   while IFS= read -r base; do
     [ "$base" = "$DIRECT" ] && continue
+    rm -f "${TMP:?}/checksums.txt"
     get "$(asset_url "$base" checksums.txt)" "$TMP/checksums.txt" 2>/dev/null && break
   done < <(sources)
 fi
