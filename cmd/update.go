@@ -51,11 +51,15 @@ var updateCmd = &cobra.Command{
 		if !jsonMode {
 			fmt.Printf("下载 ly %s ...\n", latest)
 		}
-		if err := up.Apply(ctx, latest); err != nil {
+		applied, err := up.Apply(ctx, latest)
+		if err != nil {
 			return commandFailure(jsonMode, "update_failed", err.Error(), nil)
 		}
+		if !applied.ChecksumTrusted && !jsonMode {
+			fmt.Println("⚠️  校验和取自镜像而非 GitHub 直连，只能防传输损坏，不能防篡改。")
+		}
 		return reportUpdateStatus(jsonMode, "updated", up.Current, latest,
-			fmt.Sprintf("✅ 已更新到 %s", latest))
+			fmt.Sprintf("✅ 已从 %s 更新到 %s", applied.SourceName, latest))
 	},
 }
 

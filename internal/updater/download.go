@@ -17,9 +17,16 @@ import (
 // 超时判据是「停滞」而非总时长：只要仍有字节进入就继续等，连续 stallWindow
 // 内一个字节都没有才判定失败。总时长上限会在慢链路上把大文件硬砍断——那正是
 // 旧实现的 downloadTimeout 与 install.sh 的 --max-time 120 的缺陷。
+// 重试预算按「是否有进展」区分，因为两类失败的正确处置完全相反：
+// 传输中途断开说明这个来源是通的，值得续传重试；连都连不上说明它就是挂了，
+// 应当尽快放弃、换下一个来源——多源回退场景下，在死源上死磕等于让最需要
+// 镜像的用户白等。
 type downloader struct {
-	client      *http.Client
-	attempts    int
+	client *http.Client
+	// attempts 是「连续无进展」的失败次数上限。一旦有新字节落盘就重置。
+	attempts int
+	// maxAttempts 是总次数硬上限，防止「每次只进展一个字节」的病态来源导致死循环。
+	maxAttempts int
 	stallWindow time.Duration
 	retryDelay  time.Duration
 }
@@ -33,9 +40,10 @@ func newDownloader() *downloader {
 				ResponseHeaderTimeout: 30 * time.Second,
 			},
 		},
-		attempts:    5,
+		attempts:    3,
+		maxAttempts: 20,
 		stallWindow: 30 * time.Second,
-		retryDelay:  2 * time.Second,
+		retryDelay:  time.Second,
 	}
 }
 
@@ -60,16 +68,20 @@ type fatalStatusError struct{ code int }
 func (e *fatalStatusError) Error() string { return fmt.Sprintf("HTTP %d", e.code) }
 
 // fetch 下载 url 到 path。重试时以 Range 头从已有字节处续传，而非从头重来。
+// 只要有新字节落盘就重置无进展计数，因此长时间的慢速下载不会因反复断线而被放弃；
+// 反之，完全连不上的来源会在几次尝试内快速失败，好让调用方换下一个来源。
 func (d *downloader) fetch(ctx context.Context, url, path string) error {
 	var lastErr error
-	for attempt := 1; attempt <= d.attempts; attempt++ {
-		if attempt > 1 && d.retryDelay > 0 {
+	stale := 0
+	for total := 0; total < d.maxAttempts && stale < d.attempts; total++ {
+		if total > 0 && d.retryDelay > 0 {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-time.After(d.retryDelay):
 			}
 		}
+		before := fileSize(path)
 		err := d.fetchOnce(ctx, url, path)
 		if err == nil {
 			return nil
@@ -79,8 +91,21 @@ func (d *downloader) fetch(ctx context.Context, url, path string) error {
 			return fmt.Errorf("下载 %s 失败: %w", url, err)
 		}
 		lastErr = err
+		if fileSize(path) > before {
+			stale = 0
+		} else {
+			stale++
+		}
 	}
-	return fmt.Errorf("下载 %s 失败（已重试 %d 次）: %w", url, d.attempts, lastErr)
+	return fmt.Errorf("下载 %s 失败: %w", url, lastErr)
+}
+
+func fileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 func (d *downloader) fetchOnce(ctx context.Context, url, path string) error {

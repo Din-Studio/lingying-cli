@@ -232,7 +232,7 @@ func TestApplyReplacesExecutable(t *testing.T) {
 	archive := tarGz(t, "ly", binary)
 	up, _ := testUpdater(t, serveRelease("0.2.0", archive))
 
-	if err := up.Apply(context.Background(), "0.2.0"); err != nil {
+	if _, err := up.Apply(context.Background(), "0.2.0"); err != nil {
 		t.Fatalf("Apply() = %v", err)
 	}
 
@@ -256,7 +256,7 @@ func TestApplyAcceptsVersionWithVPrefix(t *testing.T) {
 	archive := tarGz(t, "ly", fakeBinary("0.2.0"))
 	up, _ := testUpdater(t, serveRelease("0.2.0", archive))
 
-	if err := up.Apply(context.Background(), "v0.2.0"); err != nil {
+	if _, err := up.Apply(context.Background(), "v0.2.0"); err != nil {
 		t.Fatalf("Apply(v0.2.0) = %v", err)
 	}
 }
@@ -275,7 +275,7 @@ func TestApplyAbortsWhenStagedBinaryFailsSmokeTest(t *testing.T) {
 			archive := tarGz(t, "ly", binary)
 			up, _ := testUpdater(t, serveRelease("0.2.0", archive))
 
-			err := up.Apply(context.Background(), "0.2.0")
+			_, err := up.Apply(context.Background(), "0.2.0")
 			if err == nil || !strings.Contains(err.Error(), "已保留当前版本") {
 				t.Fatalf("Apply() = %v, want smoke-test failure", err)
 			}
@@ -284,6 +284,42 @@ func TestApplyAbortsWhenStagedBinaryFailsSmokeTest(t *testing.T) {
 				t.Fatalf("executable was replaced by a broken build: %q", got)
 			}
 		})
+	}
+}
+
+func TestApplyKeepsChecksumTrustedWhenDirectSourceServesIt(t *testing.T) {
+	requirePOSIXShell(t)
+	archive := tarGz(t, "ly", fakeBinary("0.2.0"))
+	up, _ := testUpdater(t, serveRelease("0.2.0", archive))
+
+	got, err := up.Apply(context.Background(), "0.2.0")
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if !got.ChecksumTrusted {
+		t.Fatalf("ChecksumTrusted = false, want true when the trusted source served checksums")
+	}
+}
+
+func TestApplyMarksChecksumUntrustedWhenOnlyMirrorServesIt(t *testing.T) {
+	requirePOSIXShell(t)
+	archive := tarGz(t, "ly", fakeBinary("0.2.0"))
+
+	// 直连全挂：校验和与归档都只能从镜像取，此时必须降级标记。
+	up, _ := testUpdater(t, serviceUnavailable())
+	mirror := httptest.NewServer(serveRelease("0.2.0", archive))
+	defer mirror.Close()
+	up.Sources = append(up.Sources, Source{Name: "可用镜像", Base: mirror.URL})
+
+	got, err := up.Apply(context.Background(), "0.2.0")
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if got.ChecksumTrusted {
+		t.Fatalf("ChecksumTrusted = true, want false — 校验和来自不可信镜像时必须降级标记")
+	}
+	if got.SourceName != "可用镜像" {
+		t.Fatalf("SourceName = %q, want %q", got.SourceName, "可用镜像")
 	}
 }
 
@@ -300,7 +336,7 @@ func TestApplyAbortsOnChecksumMismatch(t *testing.T) {
 		}
 	}))
 
-	err := up.Apply(context.Background(), "0.2.0")
+	_, err := up.Apply(context.Background(), "0.2.0")
 	if err == nil || !strings.Contains(err.Error(), "校验和不匹配") {
 		t.Fatalf("Apply() = %v, want checksum mismatch", err)
 	}
@@ -314,7 +350,7 @@ func TestApplyFailsWhenArchiveLacksBinary(t *testing.T) {
 	archive := tarGz(t, "something-else", "not ly")
 	up, _ := testUpdater(t, serveRelease("0.2.0", archive))
 
-	if err := up.Apply(context.Background(), "0.2.0"); err == nil {
+	if _, err := up.Apply(context.Background(), "0.2.0"); err == nil {
 		t.Fatal("Apply() = nil, want missing-binary error")
 	}
 	got, _ := os.ReadFile(up.ExecPath)
@@ -338,7 +374,7 @@ func TestApplyFailsWhenInstallDirNotWritable(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(dir, 0o700) })
 
 	up := &Updater{Current: "0.1.5", ExecPath: exec, HTTP: http.DefaultClient, GOOS: "linux", GOARCH: "amd64"}
-	err := up.Apply(context.Background(), "0.2.0")
+	_, err := up.Apply(context.Background(), "0.2.0")
 	if err == nil || !strings.Contains(err.Error(), "无法写入") {
 		t.Fatalf("Apply() = %v, want unwritable-directory error", err)
 	}

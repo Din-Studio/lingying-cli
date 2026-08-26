@@ -2,6 +2,7 @@ package updater
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -76,6 +77,72 @@ func TestFetchResumesWithRangeHeaderInsteadOfRestarting(t *testing.T) {
 	}
 	if r, _ := sawRange.Load().(string); r != "bytes=4-" {
 		t.Fatalf("Range header = %q, want %q — 续传未生效，重试是从头开始的", r, "bytes=4-")
+	}
+}
+
+// 慢链路上反复断线是常态。只要每次都有新字节落盘，就不该因为「重试次数用完」
+// 而放弃——否则大文件永远下不完。无进展预算是 3，这里断 5 次仍应成功。
+func TestFetchKeepsRetryingWhileBytesKeepArriving(t *testing.T) {
+	const full = "0123456789"
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := int(atomic.AddInt32(&hits, 1))
+		start := 0
+		if got := r.Header.Get("Range"); got != "" {
+			if _, err := fmt.Sscanf(got, "bytes=%d-", &start); err != nil {
+				t.Errorf("unparsable Range header %q: %v", got, err)
+			}
+		}
+		if start >= len(full) {
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		if start > 0 {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-9/10", start))
+			w.WriteHeader(http.StatusPartialContent)
+		}
+		// 每次只发一个字节就断开，共需 10 次才能传完。
+		_, _ = w.Write([]byte(full[start : start+1]))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		if n < len(full) {
+			panic(http.ErrAbortHandler)
+		}
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "asset")
+	d := newDownloader()
+	d.retryDelay = 0
+	if err := d.fetch(context.Background(), server.URL, path); err != nil {
+		t.Fatalf("fetch() error = %v — 有进展的重试不应被无进展预算掐断", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(got) != full {
+		t.Fatalf("content = %q, want %q", got, full)
+	}
+}
+
+func TestFetchAbandonsDeadSourceQuickly(t *testing.T) {
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	d := newDownloader()
+	d.retryDelay = 0
+	if err := d.fetch(context.Background(), server.URL, filepath.Join(t.TempDir(), "asset")); err == nil {
+		t.Fatalf("fetch() error = nil, want failure")
+	}
+	// 连不上的来源必须快速放弃，否则多源回退时用户要为每个死源白等。
+	if int(hits) != d.attempts {
+		t.Fatalf("hits = %d, want %d — 无进展的来源应在预算内放弃", hits, d.attempts)
 	}
 }
 

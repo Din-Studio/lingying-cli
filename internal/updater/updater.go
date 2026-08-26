@@ -38,10 +38,6 @@ const (
 	// 那会在慢链路上把大文件硬砍断；改由 download.go 的停滞检测负责。
 	versionTimeout = 10 * time.Second
 	verifyTimeout  = 10 * time.Second
-
-	// downloadTimeout 是一个总时长上限，在慢链路上会把大文件硬砍断。
-	// 它随下一步引入的停滞检测下载器一并移除。
-	downloadTimeout = 120 * time.Second
 )
 
 // Updater holds everything the update flow needs. Repo, Sources and the
@@ -137,54 +133,106 @@ func (u *Updater) NeedsUpdate(latest string) bool {
 	return compareVersions(latest, current) > 0
 }
 
+// Applied 描述一次成功更新的来源信息。
+type Applied struct {
+	SourceName string
+	// ChecksumTrusted 为 false 表示校验和取自镜像，只能防传输损坏、不能防篡改。
+	// 调用方必须就此向用户告警。
+	ChecksumTrusted bool
+}
+
 // Apply downloads the release archive for `version`, verifies its SHA-256
 // against checksums.txt, and replaces the running executable with it.
-func (u *Updater) Apply(ctx context.Context, version string) error {
+func (u *Updater) Apply(ctx context.Context, version string) (Applied, error) {
 	version = strings.TrimPrefix(version, "v")
 	dir := filepath.Dir(u.ExecPath)
+	var applied Applied
 
 	// Creating the staging file doubles as the writability probe: if we can't
 	// write next to the executable, we can't atomically replace it either.
 	staged, err := os.CreateTemp(dir, ".ly-update-*")
 	if err != nil {
-		return fmt.Errorf("无法写入 %s: %w", dir, err)
+		return applied, fmt.Errorf("无法写入 %s: %w", dir, err)
 	}
 	stagedPath := staged.Name()
 	staged.Close()
 	defer os.Remove(stagedPath)
 
 	asset := u.assetName()
-	// 暂时只用首个来源，行为与改造前一致；多源回退与信任分级随后接入。
-	src := u.Sources[0]
+	d := newDownloader()
 
-	sums, err := u.fetchWithin(ctx, src.AssetURL(u.Repo, version, "checksums.txt"), downloadTimeout)
+	expected, trusted, err := u.fetchChecksum(ctx, d, version, asset)
 	if err != nil {
-		return fmt.Errorf("下载校验和失败: %w", err)
+		return applied, err
 	}
-	expected, err := expectedChecksum(sums, asset)
-	if err != nil {
-		return err
+	applied.ChecksumTrusted = trusted
+
+	archivePath := stagedPath + ".archive"
+	defer os.Remove(archivePath)
+
+	var lastErr error
+	for _, src := range u.Sources {
+		_ = os.Remove(archivePath)
+		if err := d.fetch(ctx, src.AssetURL(u.Repo, version, asset), archivePath); err != nil {
+			lastErr = err
+			continue
+		}
+		applied.SourceName = src.Name
+		lastErr = nil
+		break
+	}
+	if applied.SourceName == "" {
+		return applied, fmt.Errorf("下载 %s 失败: %w", asset, lastErr)
 	}
 
-	archive, err := u.fetchWithin(ctx, src.AssetURL(u.Repo, version, asset), downloadTimeout)
+	archive, err := os.ReadFile(archivePath)
 	if err != nil {
-		return fmt.Errorf("下载 %s 失败: %w", asset, err)
+		return applied, err
 	}
 	actual := sha256.Sum256(archive)
 	if hex.EncodeToString(actual[:]) != expected {
-		return fmt.Errorf("校验和不匹配，已中止更新\n  期望: %s\n  实际: %s", expected, hex.EncodeToString(actual[:]))
+		// 校验失败是安全事件，不换源重试——立刻中止。
+		return applied, fmt.Errorf("校验和不匹配，已中止更新\n  期望: %s\n  实际: %s", expected, hex.EncodeToString(actual[:]))
 	}
 
 	if err := extractBinary(archive, asset, u.binaryName(), stagedPath); err != nil {
-		return err
+		return applied, err
 	}
 	if err := os.Chmod(stagedPath, 0o755); err != nil {
-		return err
+		return applied, err
 	}
 	if err := verifyStaged(ctx, stagedPath, version); err != nil {
-		return err
+		return applied, err
 	}
-	return replaceExecutable(stagedPath, u.ExecPath, u.GOOS == "windows")
+	return applied, replaceExecutable(stagedPath, u.ExecPath, u.GOOS == "windows")
+}
+
+// fetchChecksum 先只向可信源索取 checksums.txt。校验和文件很小，慢链路上也容易
+// 直连成功；只要它来自可信源，归档包就可以安全地走镜像——镜像换不掉包。
+// 仅当可信源全部失败时才降级到镜像，并把 trusted 置为 false。
+func (u *Updater) fetchChecksum(ctx context.Context, d *downloader, version, asset string) (string, bool, error) {
+	try := func(want bool) (string, bool) {
+		for _, src := range u.Sources {
+			if src.Trusted != want {
+				continue
+			}
+			sums, err := d.bytes(ctx, src.AssetURL(u.Repo, version, "checksums.txt"))
+			if err != nil {
+				continue
+			}
+			if sum, err := expectedChecksum(sums, asset); err == nil {
+				return sum, true
+			}
+		}
+		return "", false
+	}
+	if sum, ok := try(true); ok {
+		return sum, true, nil
+	}
+	if sum, ok := try(false); ok {
+		return sum, false, nil
+	}
+	return "", false, errors.New("下载校验和失败：所有来源均不可用")
 }
 
 // verifyStaged runs the downloaded binary before it takes over. The checksum
@@ -221,26 +269,6 @@ func (u *Updater) binaryName() string {
 		return "ly.exe"
 	}
 	return "ly"
-}
-
-func (u *Updater) fetchWithin(ctx context.Context, url string, timeout time.Duration) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "ly-cli-updater")
-	resp, err := u.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, url)
-	}
-	return io.ReadAll(resp.Body)
 }
 
 // expectedChecksum pulls the hash for `asset` out of goreleaser's
