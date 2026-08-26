@@ -8,5 +8,8 @@ skill="$root/skills/SKILL.md"
 grep -Fq 'name: lingying-gateway' "$skill"
 grep -Fq 'ly --json task get' "$skill"
 grep -Fq 'LY_ACCESS_TOKEN' "$skill"
-node -e 'const p=require(process.argv[1]); if (!p.files.includes("skills/SKILL.md")) process.exit(1)' "$root/package.json"
+# SKILL.md 必须随发布归档一同分发。分发渠道已从 npm 换成 GitHub Release，
+# 因此契约的检查对象也从 package.json 的 files 换成 goreleaser 的 archives。
+grep -Fq 'src: skills/SKILL.md' "$root/.goreleaser.yml"
+grep -Fq 'dst: skills/SKILL.md' "$root/.goreleaser.yml"
 echo "skill package contract passed"
