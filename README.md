@@ -317,6 +317,29 @@ scripts/validate-skill.sh
 
 项目采用 Go + Cobra；HTTP mock 覆盖本地上传、任务提交、轮询和下载的完整传输生命周期。
 
+### 发版
+
+**本项目不使用 GitHub Actions 发版**，全部在本地执行。仓库内没有 workflow 文件——推送 tag 不会触发任何自动化。
+
+```bash
+make check                  # vet + test -race + skill 契约 + shellcheck
+make snapshot               # 本地构建全平台产物，不发布；核对 dist/
+make release TAG=v0.1.8     # 打 tag、推送、goreleaser 发布
+```
+
+`make release` 在打 tag 前会依次校验：TAG 格式、工作区干净、当前在 `main`、tag 未占用、凭据可用（`GITHUB_TOKEN` 或已登录的 `gh`）。任一不满足即中止，不会留下半成品 tag。
+
+发布后验证：
+
+```bash
+curl -fsSL https://github.com/Din-Studio/lingying-cli/releases/latest/download/install.sh | bash
+ly --version
+```
+
+注意 GitHub 的 `releases/latest` 在各边缘节点间收敛需要约一分钟。刚发完版立刻执行 `ly update` 有可能仍拿到上一个版本，稍等再试即可。
+
+发布的资产名**不含版本号**（`ly-darwin-arm64.tar.gz`）。版本由 URL 路径承载，使 `releases/latest/download/X` 与 `releases/download/v<版本>/X` 指向同一份文件，安装脚本因此无需先发现版本号。
+
 ## 许可证
 
 MIT
