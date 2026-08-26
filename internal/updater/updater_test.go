@@ -44,8 +44,8 @@ func testUpdater(t *testing.T, handler http.Handler) (*Updater, string) {
 }
 
 // testAsset mirrors Updater.assetName for the platform the test runs on.
-func testAsset(version string) string {
-	return fmt.Sprintf("ly-%s-%s-%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)
+func testAsset() string {
+	return fmt.Sprintf("ly-%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH)
 }
 
 // fakeBinary is a runnable stand-in for a released ly: it answers --version
@@ -206,7 +206,7 @@ func TestExpectedChecksum(t *testing.T) {
 // serveRelease answers checksums.txt and the archive for `version`, and 404s
 // everything else.
 func serveRelease(version string, archive []byte) http.HandlerFunc {
-	asset := testAsset(version)
+	asset := testAsset()
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/download/v" + version + "/checksums.txt":
@@ -282,7 +282,7 @@ func TestApplyAbortsWhenStagedBinaryFailsSmokeTest(t *testing.T) {
 
 func TestApplyAbortsOnChecksumMismatch(t *testing.T) {
 	archive := tarGz(t, "ly", "tampered binary")
-	asset := testAsset("0.2.0")
+	asset := testAsset()
 	up, _ := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/download/v0.2.0/checksums.txt":

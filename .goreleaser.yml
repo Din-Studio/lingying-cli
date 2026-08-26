@@ -29,7 +29,9 @@ builds:
 
 archives:
   - id: ly
-    name_template: "ly-{{.Version}}-{{.Os}}-{{.Arch}}"
+    # 资产名不含版本号：latest/download/X 只是到 download/<最新tag>/X 的重定向，
+    # 因此同一份文件同时服务「取最新」与「锁版本」，引导脚本无需先发现版本号。
+    name_template: "ly-{{.Os}}-{{.Arch}}"
     formats: ["tar.gz"]
     format_overrides:
       - goos: windows
@@ -37,8 +39,10 @@ archives:
     files:
       - src: LICENSE
       - src: README.md
+      # dst 必须是完整目标路径；写成 "skills/" 会被当作文件名，
+      # 归档里会出现一个名为 skills 的文件而不是 skills/ 目录。
       - src: skills/SKILL.md
-        dst: skills/
+        dst: skills/SKILL.md
 
 checksum:
   name_template: "checksums.txt"
@@ -57,3 +61,8 @@ release:
   github:
     owner: Din-Studio
     name: lingying-cli
+  # 引导脚本作为 Release 资产上传，使安装全程只使用 github.com 一个域名，
+  # 彻底移除对 raw.githubusercontent.com 的依赖。
+  extra_files:
+    - glob: scripts/install.sh
+    - glob: scripts/install.ps1

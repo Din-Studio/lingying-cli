@@ -149,7 +149,7 @@ func (u *Updater) Apply(ctx context.Context, version string) error {
 	staged.Close()
 	defer os.Remove(stagedPath)
 
-	asset := u.assetName(version)
+	asset := u.assetName()
 	base := fmt.Sprintf("%s/v%s", u.ReleaseBase, version)
 
 	sums, err := u.fetchWithin(ctx, base+"/checksums.txt", downloadTimeout)
@@ -201,12 +201,14 @@ func verifyStaged(ctx context.Context, path, version string) error {
 	return nil
 }
 
-func (u *Updater) assetName(version string) string {
+// assetName 返回本平台的归档名。名称不含版本号——版本由 URL 路径承载，
+// 使 latest/download/X 与 download/v<X>/X 指向同一份文件。
+func (u *Updater) assetName() string {
 	ext := ".tar.gz"
 	if u.GOOS == "windows" {
 		ext = ".zip"
 	}
-	return fmt.Sprintf("ly-%s-%s-%s%s", version, u.GOOS, u.GOARCH, ext)
+	return fmt.Sprintf("ly-%s-%s%s", u.GOOS, u.GOARCH, ext)
 }
 
 func (u *Updater) binaryName() string {
