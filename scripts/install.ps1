@@ -1,182 +1,128 @@
-# ly Windows installer
+# ly Windows 引导安装器
 #
-#   irm https://raw.githubusercontent.com/Din-Studio/lingying-cli/main/scripts/install.ps1 | iex
+#   irm https://github.com/Din-Studio/lingying-cli/releases/latest/download/install.ps1 | iex
 #
-# Downloads the current Windows release, verifies its SHA-256 checksum, and
-# installs ly.exe for the current user without requiring Node.js or npm.
-
-[CmdletBinding()]
-param(
-    [string]$InstallDir = $env:LY_INSTALL_DIR
-)
+# 唯一职责：取得一个校验通过的 ly.exe 并写入 PATH。此后的更新请用 ly update。
+# 环境变量：LY_VERSION 锁版本、LY_MIRROR 自定义镜像、LY_INSTALL_DIR 安装目录。
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ProgramName = 'ly'
-$Repository = 'Din-Studio/lingying-cli'
-$ReleaseBase = "https://github.com/$Repository/releases/download"
-$ManifestUrl = "https://raw.githubusercontent.com/$Repository/main/scripts/version.json"
+$Repo = 'Din-Studio/lingying-cli'
+$Direct = 'https://github.com'
+$InstallDir = if ($env:LY_INSTALL_DIR) { $env:LY_INSTALL_DIR }
+              else { Join-Path $env:LOCALAPPDATA 'ly\bin' }
 
-function Write-InstallMessage {
-    param([string]$Message)
-    Write-Host "ly-installer: $Message"
+function Say { param([string]$m) Write-Host "ly-installer: $m" }
+function Die { param([string]$m) throw "ly-installer: $m" }
+
+# 候选源基址，直连优先。顺序必须与 internal/updater/source.go 的 Sources() 一致。
+function Get-Sources {
+    $list = @($Direct)
+    if ($env:LY_MIRROR) { $list += ($env:LY_MIRROR.TrimEnd('/') + '/' + $Direct) }
+    $list += "https://ghfast.top/$Direct"
+    $list += "https://gh-proxy.com/$Direct"
+    return $list
 }
 
-function Stop-Install {
-    param([string]$Message)
-    throw "ly-installer: $Message"
+# 资产名不含版本号：latest/download/X 只是到 download/<最新tag>/X 的重定向，
+# 因此无需先发现版本号即可下载。
+function Get-AssetUrl {
+    param([string]$Base, [string]$Asset)
+    if ($env:LY_VERSION) {
+        $v = $env:LY_VERSION.TrimStart('v')
+        return "$Base/$Repo/releases/download/v$v/$Asset"
+    }
+    return "$Base/$Repo/releases/latest/download/$Asset"
 }
 
-function Download-File {
-    param(
-        [Parameter(Mandatory = $true)][string]$Uri,
-        [Parameter(Mandatory = $true)][string]$Destination
-    )
-
-    $requestParameters = @{
-        Uri                = $Uri
-        OutFile            = $Destination
-        MaximumRedirection = 5
-    }
-    if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey('UseBasicParsing')) {
-        $requestParameters.UseBasicParsing = $true
-    }
-    Invoke-WebRequest @requestParameters
-}
-
-function Get-WindowsArchitecture {
-    # PROCESSOR_ARCHITEW6432 identifies the native architecture when this
-    # installer is started from a 32-bit PowerShell process on 64-bit Windows.
-    $rawArchitecture = $env:PROCESSOR_ARCHITEW6432
-    if ([string]::IsNullOrWhiteSpace($rawArchitecture)) {
-        $rawArchitecture = $env:PROCESSOR_ARCHITECTURE
-    }
-
-    switch ($rawArchitecture.ToUpperInvariant()) {
-        'AMD64' { return 'amd64' }
-        'ARM64' { return 'arm64' }
-        default { Stop-Install "unsupported Windows architecture: $rawArchitecture" }
-    }
-}
-
-function Get-ExpectedChecksum {
-    param(
-        [Parameter(Mandatory = $true)][string]$ChecksumFile,
-        [Parameter(Mandatory = $true)][string]$AssetName
-    )
-
-    foreach ($line in Get-Content -LiteralPath $ChecksumFile) {
-        $parts = $line -split '\s+', 2
-        if ($parts.Count -ne 2) {
-            continue
+function Get-Remote {
+    param([string]$Uri, [string]$OutFile)
+    try {
+        $p = @{ Uri = $Uri; OutFile = $OutFile; MaximumRedirection = 5; TimeoutSec = 600 }
+        if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey('UseBasicParsing')) {
+            $p.UseBasicParsing = $true
         }
-        $hash = $parts[0]
-        $name = $parts[1].Trim().TrimStart('*')
-        if ($name -eq $AssetName) {
-            if ($hash -notmatch '^[0-9a-fA-F]{64}$') {
-                Stop-Install "invalid SHA-256 checksum for $AssetName"
-            }
-            return $hash.ToLowerInvariant()
-        }
-    }
-    Stop-Install "checksums.txt does not contain $AssetName"
+        Invoke-WebRequest @p
+        return $true
+    } catch { return $false }
 }
 
-function Add-InstallDirectoryToUserPath {
-    param([Parameter(Mandatory = $true)][string]$Directory)
+if ($env:OS -ne 'Windows_NT') { Die '此安装器仅支持 Windows' }
 
-    $normalizedDirectory = [IO.Path]::GetFullPath($Directory).TrimEnd('\\')
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $entries = @()
-    if (-not [string]::IsNullOrWhiteSpace($userPath)) {
-        $entries = @($userPath -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    }
-    $alreadyPresent = $entries | Where-Object { $_.TrimEnd('\\') -ieq $normalizedDirectory }
-    if (-not $alreadyPresent) {
-        $newPath = @($entries + $normalizedDirectory) -join ';'
-        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-        Write-InstallMessage "added $normalizedDirectory to the user PATH"
-    }
-
-    $sessionEntries = @($env:Path -split ';')
-    $sessionHasDirectory = $sessionEntries | Where-Object { $_.TrimEnd('\\') -ieq $normalizedDirectory }
-    if (-not $sessionHasDirectory) {
-        $env:Path = "$normalizedDirectory;$env:Path"
-    }
+$rawArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+$arch = switch ($rawArch.ToUpperInvariant()) {
+    'AMD64' { 'amd64' }
+    'ARM64' { 'arm64' }
+    default { Die "不支持的架构: $rawArch" }
 }
+$asset = "ly-windows-$arch.zip"
 
-if ($env:OS -ne 'Windows_NT') {
-    Stop-Install 'this installer only supports native Windows PowerShell or PowerShell on Windows'
-}
-
-if ([string]::IsNullOrWhiteSpace($InstallDir)) {
-    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-    if ([string]::IsNullOrWhiteSpace($localAppData)) {
-        Stop-Install 'LOCALAPPDATA is unavailable; set LY_INSTALL_DIR to choose an installation directory'
-    }
-    $InstallDir = Join-Path $localAppData 'ly\bin'
-}
-
-$tempDirectory = Join-Path ([IO.Path]::GetTempPath()) ("ly-install-" + [Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $tempDirectory -Force | Out-Null
+$tmp = Join-Path ([IO.Path]::GetTempPath()) ("ly-install-" + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
 try {
-    $version = $env:LY_VERSION
-    if ([string]::IsNullOrWhiteSpace($version)) {
-        $manifestFile = Join-Path $tempDirectory 'version.json'
-        Write-InstallMessage "downloading version manifest $ManifestUrl"
-        Download-File -Uri $ManifestUrl -Destination $manifestFile
-        $manifest = Get-Content -LiteralPath $manifestFile -Raw | ConvertFrom-Json
-        $version = [string]$manifest.version
+    # checksums.txt 只有几百字节，慢链路上也容易直连成功。先只向直连索取：
+    # 校验和一旦来自可信源，归档包就可以安全地走镜像——镜像换不掉包。
+    $sumFile = Join-Path $tmp 'checksums.txt'
+    $trusted = Get-Remote -Uri (Get-AssetUrl $Direct 'checksums.txt') -OutFile $sumFile
+    if (-not $trusted) {
+        foreach ($base in Get-Sources) {
+            if ($base -eq $Direct) { continue }
+            if (Get-Remote -Uri (Get-AssetUrl $base 'checksums.txt') -OutFile $sumFile) { break }
+        }
     }
-    $version = $version.Trim().TrimStart('v')
-    if ([string]::IsNullOrWhiteSpace($version)) {
-        Stop-Install 'version manifest is missing a version'
+    if (-not (Test-Path $sumFile)) { Die '无法获取校验和文件，已中止以免安装未经校验的二进制' }
+
+    $expected = $null
+    foreach ($line in Get-Content -LiteralPath $sumFile) {
+        $parts = $line -split '\s+', 2
+        if ($parts.Count -eq 2 -and $parts[1].Trim().TrimStart('*') -eq $asset) {
+            $expected = $parts[0].ToLowerInvariant()
+        }
     }
+    if ($expected -notmatch '^[0-9a-f]{64}$') { Die "校验和文件中没有 $asset" }
 
-    $architecture = Get-WindowsArchitecture
-    $asset = "ly-$version-windows-$architecture.zip"
-    $checksumUrl = "$ReleaseBase/v$version/checksums.txt"
-    $assetUrl = "$ReleaseBase/v$version/$asset"
-    $checksumFile = Join-Path $tempDirectory 'checksums.txt'
-    $archiveFile = Join-Path $tempDirectory $asset
+    $version = if ($env:LY_VERSION) { $env:LY_VERSION } else { 'latest' }
+    Say "平台 windows-$arch  版本 $version"
 
-    Write-InstallMessage "platform: windows-$architecture  version: $version"
-    Write-InstallMessage "downloading checksums $checksumUrl"
-    Download-File -Uri $checksumUrl -Destination $checksumFile
-    $expectedHash = Get-ExpectedChecksum -ChecksumFile $checksumFile -AssetName $asset
-
-    Write-InstallMessage "downloading $assetUrl"
-    Download-File -Uri $assetUrl -Destination $archiveFile
-    $actualHash = (Get-FileHash -LiteralPath $archiveFile -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualHash -ne $expectedHash) {
-        Stop-Install "SHA-256 checksum mismatch for $asset"
+    $archive = Join-Path $tmp $asset
+    $ok = $false
+    foreach ($base in Get-Sources) {
+        Say "下载 $asset （$base）"
+        if (Get-Remote -Uri (Get-AssetUrl $base $asset) -OutFile $archive) { $ok = $true; break }
+        Say '该来源不可用，尝试下一个'
     }
-    Write-InstallMessage 'SHA-256 checksum verified'
+    if (-not $ok) { Die '所有下载来源均失败' }
 
-    $extractDirectory = Join-Path $tempDirectory 'extract'
-    Expand-Archive -LiteralPath $archiveFile -DestinationPath $extractDirectory -Force
-    $binary = Get-ChildItem -LiteralPath $extractDirectory -Filter 'ly.exe' -File -Recurse | Select-Object -First 1
-    if ($null -eq $binary) {
-        Stop-Install "ly.exe was not found in $asset"
-    }
+    $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) { Die "SHA-256 校验和不匹配，已中止`n  期望: $expected`n  实际: $actual" }
+    Say 'SHA-256 校验通过'
+    if (-not $trusted) { Say '警告 —— 校验和取自镜像而非 GitHub 直连，只能防传输损坏，不能防篡改' }
+
+    $extract = Join-Path $tmp 'extract'
+    Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+    $bin = Get-ChildItem -LiteralPath $extract -Filter 'ly.exe' -File -Recurse | Select-Object -First 1
+    if ($null -eq $bin) { Die '归档中没有 ly.exe' }
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    $destination = Join-Path $InstallDir 'ly.exe'
-    Copy-Item -LiteralPath $binary.FullName -Destination $destination -Force
-    Add-InstallDirectoryToUserPath -Directory $InstallDir
+    $dest = Join-Path $InstallDir 'ly.exe'
+    Copy-Item -LiteralPath $bin.FullName -Destination $dest -Force
 
-    & $destination --version
-    if ($LASTEXITCODE -ne 0) {
-        Stop-Install 'installed ly.exe did not start successfully'
+    $normalized = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $entries = @($userPath -split ';' | Where-Object { $_ })
+    if (-not ($entries | Where-Object { $_.TrimEnd('\') -ieq $normalized })) {
+        [Environment]::SetEnvironmentVariable('Path', (@($entries + $normalized) -join ';'), 'User')
+        Say "已将 $normalized 写入用户 PATH"
     }
-    Write-InstallMessage "ly installed: $destination"
-    Write-InstallMessage 'open a new terminal, then run ly --help'
+    $env:Path = "$normalized;$env:Path"
+
+    & $dest --version
+    Say "ly 已安装: $dest"
+    Say '打开新终端后运行 ly --help；后续更新请运行 ly update'
 }
 finally {
-    if (Test-Path -LiteralPath $tempDirectory) {
-        Remove-Item -LiteralPath $tempDirectory -Recurse -Force
-    }
+    if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
 }

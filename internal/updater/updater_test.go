@@ -32,20 +32,19 @@ func testUpdater(t *testing.T, handler http.Handler) (*Updater, string) {
 		t.Fatal(err)
 	}
 	return &Updater{
-		Current:     "0.1.5",
-		ExecPath:    target,
-		HTTP:        server.Client(),
-		ManifestURL: server.URL + "/version.json",
-		ReleaseAPI:  server.URL + "/releases/latest",
-		ReleaseBase: server.URL + "/download",
-		GOOS:        runtime.GOOS,
-		GOARCH:      runtime.GOARCH,
+		Current:  "0.1.5",
+		ExecPath: target,
+		HTTP:     server.Client(),
+		Repo:     "Din-Studio/lingying-cli",
+		Sources:  []Source{{Name: "假直连", Base: server.URL, Trusted: true}},
+		GOOS:     runtime.GOOS,
+		GOARCH:   runtime.GOARCH,
 	}, server.URL
 }
 
 // testAsset mirrors Updater.assetName for the platform the test runs on.
-func testAsset(version string) string {
-	return fmt.Sprintf("ly-%s-%s-%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)
+func testAsset() string {
+	return fmt.Sprintf("ly-%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH)
 }
 
 // fakeBinary is a runnable stand-in for a released ly: it answers --version
@@ -100,52 +99,57 @@ func sha256Hex(data []byte) string {
 
 // ── Version resolution ──
 
-func TestLatestVersionPrefersManifest(t *testing.T) {
+// redirectTo 模拟 GitHub 的 releases/latest：302 跳到具体 tag。
+func redirectTo(tag string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "https://example.invalid/x/releases/tag/"+tag)
+		w.WriteHeader(http.StatusFound)
+	}
+}
+
+func serviceUnavailable() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+}
+
+func TestLatestVersionReadsTagFromRedirect(t *testing.T) {
+	var sawPath string
 	up, _ := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/version.json":
-			w.Write([]byte(`{"version": "0.2.0"}`))
-		case "/releases/latest":
-			w.Write([]byte(`{"tag_name": "v9.9.9"}`))
-		}
+		sawPath = r.URL.Path
+		redirectTo("v0.1.6")(w, r)
 	}))
 
 	got, err := up.LatestVersion(context.Background())
-	if err != nil || got != "0.2.0" {
-		t.Fatalf("LatestVersion() = %q, %v; want 0.2.0", got, err)
+	if err != nil {
+		t.Fatalf("LatestVersion() error = %v", err)
+	}
+	if got != "0.1.6" {
+		t.Fatalf("LatestVersion() = %q, want %q", got, "0.1.6")
+	}
+	if !strings.HasSuffix(sawPath, "/releases/latest") {
+		t.Fatalf("requested path = %q, want it to end with /releases/latest", sawPath)
 	}
 }
 
-func TestLatestVersionFallsBackToReleaseAPI(t *testing.T) {
-	for name, manifest := range map[string]http.HandlerFunc{
-		"unreachable": func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) },
-		"malformed":   func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("not json")) },
-		"empty version": func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte(`{"version": ""}`))
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			up, _ := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/releases/latest" {
-					w.Write([]byte(`{"tag_name": "v0.3.1"}`))
-					return
-				}
-				manifest(w, r)
-			}))
+func TestLatestVersionFallsBackToNextSource(t *testing.T) {
+	up, _ := testUpdater(t, serviceUnavailable())
+	live := httptest.NewServer(redirectTo("v9.9.9"))
+	defer live.Close()
 
-			got, err := up.LatestVersion(context.Background())
-			if err != nil || got != "0.3.1" {
-				t.Fatalf("LatestVersion() = %q, %v; want 0.3.1", got, err)
-			}
-		})
+	up.Sources = append(up.Sources, Source{Name: "可用镜像", Base: live.URL})
+
+	got, err := up.LatestVersion(context.Background())
+	if err != nil {
+		t.Fatalf("LatestVersion() error = %v", err)
+	}
+	if got != "9.9.9" {
+		t.Fatalf("LatestVersion() = %q, want %q — 直连挂掉时应回退到下一个来源", got, "9.9.9")
 	}
 }
 
-func TestLatestVersionFailsWhenBothSourcesFail(t *testing.T) {
-	up, _ := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-
+func TestLatestVersionFailsWhenEverySourceIsDown(t *testing.T) {
+	up, _ := testUpdater(t, serviceUnavailable())
 	if _, err := up.LatestVersion(context.Background()); err == nil {
 		t.Fatal("LatestVersion() = nil error, want failure")
 	}
@@ -206,12 +210,15 @@ func TestExpectedChecksum(t *testing.T) {
 // serveRelease answers checksums.txt and the archive for `version`, and 404s
 // everything else.
 func serveRelease(version string, archive []byte) http.HandlerFunc {
-	asset := testAsset(version)
+	asset := testAsset()
+	// 按后缀匹配：Source.AssetURL 拼出的路径带有仓库前缀
+	// （/<owner>/<repo>/releases/download/v<版本>/<资产>）。
+	prefix := "/releases/download/v" + version + "/"
 	return func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/download/v" + version + "/checksums.txt":
+		switch {
+		case strings.HasSuffix(r.URL.Path, prefix+"checksums.txt"):
 			w.Write([]byte(sha256Hex(archive) + "  " + asset + "\n"))
-		case "/download/v" + version + "/" + asset:
+		case strings.HasSuffix(r.URL.Path, prefix+asset):
 			w.Write(archive)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -225,7 +232,7 @@ func TestApplyReplacesExecutable(t *testing.T) {
 	archive := tarGz(t, "ly", binary)
 	up, _ := testUpdater(t, serveRelease("0.2.0", archive))
 
-	if err := up.Apply(context.Background(), "0.2.0"); err != nil {
+	if _, err := up.Apply(context.Background(), "0.2.0"); err != nil {
 		t.Fatalf("Apply() = %v", err)
 	}
 
@@ -249,7 +256,7 @@ func TestApplyAcceptsVersionWithVPrefix(t *testing.T) {
 	archive := tarGz(t, "ly", fakeBinary("0.2.0"))
 	up, _ := testUpdater(t, serveRelease("0.2.0", archive))
 
-	if err := up.Apply(context.Background(), "v0.2.0"); err != nil {
+	if _, err := up.Apply(context.Background(), "v0.2.0"); err != nil {
 		t.Fatalf("Apply(v0.2.0) = %v", err)
 	}
 }
@@ -268,7 +275,7 @@ func TestApplyAbortsWhenStagedBinaryFailsSmokeTest(t *testing.T) {
 			archive := tarGz(t, "ly", binary)
 			up, _ := testUpdater(t, serveRelease("0.2.0", archive))
 
-			err := up.Apply(context.Background(), "0.2.0")
+			_, err := up.Apply(context.Background(), "0.2.0")
 			if err == nil || !strings.Contains(err.Error(), "已保留当前版本") {
 				t.Fatalf("Apply() = %v, want smoke-test failure", err)
 			}
@@ -280,19 +287,84 @@ func TestApplyAbortsWhenStagedBinaryFailsSmokeTest(t *testing.T) {
 	}
 }
 
+func TestApplyKeepsChecksumTrustedWhenDirectSourceServesIt(t *testing.T) {
+	requirePOSIXShell(t)
+	archive := tarGz(t, "ly", fakeBinary("0.2.0"))
+	up, _ := testUpdater(t, serveRelease("0.2.0", archive))
+
+	got, err := up.Apply(context.Background(), "0.2.0")
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if !got.ChecksumTrusted {
+		t.Fatalf("ChecksumTrusted = false, want true when the trusted source served checksums")
+	}
+}
+
+func TestApplyMarksChecksumUntrustedWhenOnlyMirrorServesIt(t *testing.T) {
+	requirePOSIXShell(t)
+	archive := tarGz(t, "ly", fakeBinary("0.2.0"))
+
+	// 直连全挂：校验和与归档都只能从镜像取，此时必须降级标记。
+	up, _ := testUpdater(t, serviceUnavailable())
+	mirror := httptest.NewServer(serveRelease("0.2.0", archive))
+	defer mirror.Close()
+	up.Sources = append(up.Sources, Source{Name: "可用镜像", Base: mirror.URL})
+
+	got, err := up.Apply(context.Background(), "0.2.0")
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if got.ChecksumTrusted {
+		t.Fatalf("ChecksumTrusted = true, want false — 校验和来自不可信镜像时必须降级标记")
+	}
+	if got.SourceName != "可用镜像" {
+		t.Fatalf("SourceName = %q, want %q", got.SourceName, "可用镜像")
+	}
+}
+
+// 可信源给出的答复是确定性的：它成功返回了 checksums.txt 而其中没有该资产，
+// 就说明这个资产不存在。此时若转而采信镜像的另一份 checksums.txt，镜像便可
+// 自造资产名与配套归档，用户却只看到一行降级警告。必须直接失败。
+func TestApplyRefusesMirrorChecksumWhenTrustedSourceSaysAssetIsAbsent(t *testing.T) {
+	requirePOSIXShell(t)
+	archive := tarGz(t, "ly", fakeBinary("0.2.0"))
+
+	// 直连正常响应，但 checksums.txt 里只有别的资产。
+	up, _ := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/checksums.txt") {
+			w.Write([]byte(strings.Repeat("a", 64) + "  ly-some-other-platform.tar.gz\n"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	mirror := httptest.NewServer(serveRelease("0.2.0", archive))
+	defer mirror.Close()
+	up.Sources = append(up.Sources, Source{Name: "可用镜像", Base: mirror.URL})
+
+	if _, err := up.Apply(context.Background(), "0.2.0"); err == nil {
+		t.Fatal("Apply() error = nil, want failure — 不得改用镜像的校验和")
+	}
+	got, _ := os.ReadFile(up.ExecPath)
+	if string(got) != "old binary" {
+		t.Fatalf("executable = %q, want the original left untouched", got)
+	}
+}
+
 func TestApplyAbortsOnChecksumMismatch(t *testing.T) {
 	archive := tarGz(t, "ly", "tampered binary")
-	asset := testAsset("0.2.0")
+	asset := testAsset()
 	up, _ := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/download/v0.2.0/checksums.txt":
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/releases/download/v0.2.0/checksums.txt"):
+			// 摘要与实际归档不符，模拟被篡改的包。
 			w.Write([]byte(strings.Repeat("a", 64) + "  " + asset + "\n"))
-		case "/download/v0.2.0/" + asset:
+		case strings.HasSuffix(r.URL.Path, "/releases/download/v0.2.0/"+asset):
 			w.Write(archive)
 		}
 	}))
 
-	err := up.Apply(context.Background(), "0.2.0")
+	_, err := up.Apply(context.Background(), "0.2.0")
 	if err == nil || !strings.Contains(err.Error(), "校验和不匹配") {
 		t.Fatalf("Apply() = %v, want checksum mismatch", err)
 	}
@@ -306,7 +378,7 @@ func TestApplyFailsWhenArchiveLacksBinary(t *testing.T) {
 	archive := tarGz(t, "something-else", "not ly")
 	up, _ := testUpdater(t, serveRelease("0.2.0", archive))
 
-	if err := up.Apply(context.Background(), "0.2.0"); err == nil {
+	if _, err := up.Apply(context.Background(), "0.2.0"); err == nil {
 		t.Fatal("Apply() = nil, want missing-binary error")
 	}
 	got, _ := os.ReadFile(up.ExecPath)
@@ -330,7 +402,7 @@ func TestApplyFailsWhenInstallDirNotWritable(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(dir, 0o700) })
 
 	up := &Updater{Current: "0.1.5", ExecPath: exec, HTTP: http.DefaultClient, GOOS: "linux", GOARCH: "amd64"}
-	err := up.Apply(context.Background(), "0.2.0")
+	_, err := up.Apply(context.Background(), "0.2.0")
 	if err == nil || !strings.Contains(err.Error(), "无法写入") {
 		t.Fatalf("Apply() = %v, want unwritable-directory error", err)
 	}
@@ -363,9 +435,9 @@ func TestReplaceExecutableWindowsMovesOldBinaryAside(t *testing.T) {
 // A version lookup must not hang for as long as a multi-megabyte download is
 // allowed to, so each request carries its own deadline rather than sharing one
 // client-level timeout.
-func TestFetchWithinAppliesPerRequestDeadline(t *testing.T) {
+func TestLatestVersionAppliesPerRequestDeadline(t *testing.T) {
 	release := make(chan struct{})
-	up, url := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	up, _ := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-release
 	}))
 	// Deferred here, not via t.Cleanup: the handler must be unblocked before
@@ -373,12 +445,11 @@ func TestFetchWithinAppliesPerRequestDeadline(t *testing.T) {
 	defer close(release)
 
 	start := time.Now()
-	_, err := up.fetchWithin(context.Background(), url+"/version.json", 50*time.Millisecond)
-	if err == nil {
-		t.Fatal("fetchWithin() = nil error, want deadline exceeded")
+	if _, err := up.LatestVersion(context.Background()); err == nil {
+		t.Fatal("LatestVersion() = nil error, want deadline exceeded")
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("fetchWithin() blocked for %v, want the 50ms deadline to apply", elapsed)
+	if elapsed := time.Since(start); elapsed > versionTimeout+5*time.Second {
+		t.Fatalf("LatestVersion() blocked for %v, want the %v deadline to apply", elapsed, versionTimeout)
 	}
 }
 

@@ -20,25 +20,44 @@ ly audio "一段播客开场白"
 
 ### curl：macOS、Linux 和 WSL
 
-安装脚本下载对应平台的发布包，校验 SHA-256，并将二进制放到 `~/.local/bin`。可用 `LY_INSTALL_DIR` 覆盖安装目录，`LY_VERSION` 固定版本。
+安装脚本下载对应平台的发布包，校验 SHA-256，并将二进制放到 `~/.local/bin`。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Din-Studio/lingying-cli/main/scripts/install.sh | bash
+curl -fsSL https://github.com/Din-Studio/lingying-cli/releases/latest/download/install.sh | bash
 ly --help
 ```
 
-如脚本提示 PATH 尚未生效，请重新打开终端或按提示执行 `source`。脚本在没有预编译包时会回退到 `go install`。
+如脚本提示 PATH 尚未生效，请重新打开终端或按提示执行 `source`。
 
 ### PowerShell：Windows 原生终端
 
-无需 Node.js 或 npm。安装器识别 x64/arm64，下载当前 Windows ZIP，强制校验 SHA-256 后安装到 `%LOCALAPPDATA%\ly\bin`，并写入当前用户的 PATH。可用 `LY_INSTALL_DIR` 覆盖目录，`LY_VERSION` 固定版本。
+无需 Node.js。安装器识别 x64/arm64，下载当前 Windows ZIP，强制校验 SHA-256 后安装到 `%LOCALAPPDATA%\ly\bin`，并写入当前用户的 PATH。
 
 ```powershell
-irm https://raw.githubusercontent.com/Din-Studio/lingying-cli/main/scripts/install.ps1 | iex
+irm https://github.com/Din-Studio/lingying-cli/releases/latest/download/install.ps1 | iex
 ly --help
 ```
 
 重新打开 PowerShell 或 Windows Terminal 以获取更新后的 PATH。校验和、下载或解压失败时安装器会直接失败，不会安装未经校验的二进制。
+
+### 国内网络
+
+安装与更新默认直连 GitHub，失败时自动回退到公共加速镜像。也可以用 `LY_MIRROR` 指定自己的镜像前缀，它会排在公共镜像之前：
+
+```bash
+LY_MIRROR="https://your-mirror.example.com" \
+  curl -fsSL https://github.com/Din-Studio/lingying-cli/releases/latest/download/install.sh | bash
+```
+
+校验和文件始终优先从 GitHub 直连获取——只要它来自可信来源，即便安装包走镜像也无法被篡改。若直连获取校验和也失败，安装器会退而从镜像获取，并明确打印警告。
+
+### 安装期环境变量
+
+| 变量 | 作用 |
+|---|---|
+| `LY_VERSION` | 锁定版本，如 `0.1.6` |
+| `LY_MIRROR` | 自定义镜像前缀，排在公共镜像之前 |
+| `LY_INSTALL_DIR` | 安装目录，默认 `~/.local/bin`（Windows 为 `%LOCALAPPDATA%\ly\bin`） |
 
 ### Go
 
@@ -67,7 +86,9 @@ ly update            # 更新到最新版本
 ly update --check    # 只检查是否有新版本，不做任何改动
 ```
 
-`ly update` 从 GitHub Releases 下载当前平台的发布包，校验 SHA-256、确认新版本可以正常运行后，才替换正在运行的可执行文件。无论 ly 是通过安装脚本、npm 还是 `go install` 安装的，更新方式都相同。校验和不匹配或新版本跑不起来时直接中止，当前可用的 ly 保持不变。
+`ly update` 从 GitHub Releases 下载当前平台的发布包，校验 SHA-256、确认新版本可以正常运行后，才替换正在运行的可执行文件。无论 ly 是通过安装脚本还是 `go install` 安装的，更新方式都相同。校验和不匹配或新版本跑不起来时直接中止，当前可用的 ly 保持不变。
+
+更新与安装共用同一套来源策略：直连优先，失败时回退到 `LY_MIRROR` 与公共镜像。若校验和只能从镜像取得，命令会打印警告说明它无法防篡改。
 
 若 ly 安装在当前用户无写权限的目录（如 `/usr/local/bin`），命令会失败——用有写权限的方式重新执行即可。
 

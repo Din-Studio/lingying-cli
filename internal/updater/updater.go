@@ -2,7 +2,7 @@
 // Self-update: resolve the latest release, download it, replace this binary.
 //
 // The update path is deliberately identical for every install method. Whether
-// ly arrived via install.sh, npm or go install, we download the GitHub Release
+// ly arrived via install.sh or go install, we download the GitHub Release
 // archive for this platform and overwrite the running executable in place.
 package updater
 
@@ -14,7 +14,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,33 +28,28 @@ import (
 )
 
 const (
-	defaultManifestURL = "https://raw.githubusercontent.com/Din-Studio/lingying-cli/main/scripts/version.json"
-	defaultReleaseAPI  = "https://api.github.com/repos/Din-Studio/lingying-cli/releases/latest"
-	defaultReleaseBase = "https://github.com/Din-Studio/lingying-cli/releases/download"
+	defaultRepo = "Din-Studio/lingying-cli"
 
 	// devVersion marks a binary built without the release ldflags. It carries
 	// no comparable version, so any published release counts as newer.
 	devVersion = "dev"
 
-	// Version lookups fetch a few dozen bytes; a download is a few megabytes.
-	// Separate budgets keep `ly update --check` from hanging on a dead network
-	// for as long as a real download is allowed to take.
-	versionTimeout  = 10 * time.Second
-	downloadTimeout = 120 * time.Second
-	verifyTimeout   = 10 * time.Second
+	// 版本发现只读一个 302 响应头，给它短超时。归档下载则不设总时长上限——
+	// 那会在慢链路上把大文件硬砍断；改由 download.go 的停滞检测负责。
+	versionTimeout = 10 * time.Second
+	verifyTimeout  = 10 * time.Second
 )
 
-// Updater holds everything the update flow needs. The URL and platform fields
-// are configurable so tests can point at a local server.
+// Updater holds everything the update flow needs. Repo, Sources and the
+// platform fields are configurable so tests can point at a local server.
 type Updater struct {
-	Current     string
-	ExecPath    string
-	HTTP        *http.Client
-	ManifestURL string
-	ReleaseAPI  string
-	ReleaseBase string
-	GOOS        string
-	GOARCH      string
+	Current  string
+	ExecPath string
+	HTTP     *http.Client
+	Repo     string
+	Sources  []Source
+	GOOS     string
+	GOARCH   string
 }
 
 // New resolves the running executable — following symlinks so that a
@@ -72,55 +66,61 @@ func New(current string) (*Updater, error) {
 		Current:  current,
 		ExecPath: exe,
 		// No client-level timeout: each request carries its own deadline.
-		HTTP:        &http.Client{},
-		ManifestURL: defaultManifestURL,
-		ReleaseAPI:  defaultReleaseAPI,
-		ReleaseBase: defaultReleaseBase,
-		GOOS:        runtime.GOOS,
-		GOARCH:      runtime.GOARCH,
+		HTTP:    &http.Client{},
+		Repo:    defaultRepo,
+		Sources: Sources(),
+		GOOS:    runtime.GOOS,
+		GOARCH:  runtime.GOARCH,
 	}, nil
 }
 
-// LatestVersion prefers scripts/version.json — the same manifest install.sh
-// reads, so both paths agree on what "latest" means — and falls back to the
-// GitHub Releases API when the manifest is unreachable or malformed.
+// LatestVersion 读取 releases/latest 的 302 跳转目标。该地址的 Location 形如
+// .../releases/tag/v0.1.6，一次请求即可拿到版本号——既不需要
+// raw.githubusercontent.com 上的清单，也不需要 api.github.com。
 func (u *Updater) LatestVersion(ctx context.Context) (string, error) {
-	if version, err := u.versionFromManifest(ctx); err == nil {
-		return version, nil
+	var lastErr error
+	for _, src := range u.Sources {
+		version, err := u.latestFrom(ctx, src)
+		if err == nil {
+			return version, nil
+		}
+		lastErr = err
 	}
-	version, err := u.versionFromReleaseAPI(ctx)
-	if err != nil {
-		return "", fmt.Errorf("无法获取最新版本: %w", err)
-	}
-	return version, nil
+	return "", fmt.Errorf("无法获取最新版本: %w", lastErr)
 }
 
-func (u *Updater) versionFromManifest(ctx context.Context) (string, error) {
-	body, err := u.fetchWithin(ctx, u.ManifestURL, versionTimeout)
-	if err != nil {
-		return "", err
-	}
-	var manifest struct {
-		Version string `json:"version"`
-	}
-	if err := json.Unmarshal(body, &manifest); err != nil {
-		return "", err
-	}
-	return validVersion(manifest.Version)
-}
+func (u *Updater) latestFrom(ctx context.Context, src Source) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, versionTimeout)
+	defer cancel()
 
-func (u *Updater) versionFromReleaseAPI(ctx context.Context) (string, error) {
-	body, err := u.fetchWithin(ctx, u.ReleaseAPI, versionTimeout)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src.LatestTagURL(u.Repo), nil)
 	if err != nil {
 		return "", err
 	}
-	var release struct {
-		TagName string `json:"tag_name"`
+	req.Header.Set("User-Agent", "ly-cli-updater")
+
+	// 只在这里禁用重定向跟随——我们要读的就是 Location 头。用副本而非改动
+	// u.HTTP，否则归档下载也会被打断：GitHub 的 releases/download 本身就要
+	// 跳转到 objects.githubusercontent.com。
+	client := *u.HTTP
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
-	if err := json.Unmarshal(body, &release); err != nil {
+	resp, err := client.Do(req)
+	if err != nil {
 		return "", err
 	}
-	return validVersion(release.TagName)
+	defer resp.Body.Close()
+
+	location := resp.Header.Get("Location")
+	if location == "" {
+		return "", fmt.Errorf("%s 未返回跳转地址（HTTP %d）", src.Name, resp.StatusCode)
+	}
+	_, tag, found := strings.Cut(location, "/releases/tag/")
+	if !found {
+		return "", fmt.Errorf("%s 的跳转地址无法解析: %q", src.Name, location)
+	}
+	return validVersion(tag)
 }
 
 // NeedsUpdate reports whether latest is worth installing over the running
@@ -133,53 +133,122 @@ func (u *Updater) NeedsUpdate(latest string) bool {
 	return compareVersions(latest, current) > 0
 }
 
+// Applied 描述一次成功更新的来源信息。
+type Applied struct {
+	SourceName string
+	// ChecksumTrusted 为 false 表示校验和取自镜像，只能防传输损坏、不能防篡改。
+	// 调用方必须就此向用户告警。
+	ChecksumTrusted bool
+}
+
 // Apply downloads the release archive for `version`, verifies its SHA-256
 // against checksums.txt, and replaces the running executable with it.
-func (u *Updater) Apply(ctx context.Context, version string) error {
+func (u *Updater) Apply(ctx context.Context, version string) (Applied, error) {
 	version = strings.TrimPrefix(version, "v")
 	dir := filepath.Dir(u.ExecPath)
+	var applied Applied
 
 	// Creating the staging file doubles as the writability probe: if we can't
 	// write next to the executable, we can't atomically replace it either.
 	staged, err := os.CreateTemp(dir, ".ly-update-*")
 	if err != nil {
-		return fmt.Errorf("无法写入 %s: %w", dir, err)
+		return applied, fmt.Errorf("无法写入 %s: %w", dir, err)
 	}
 	stagedPath := staged.Name()
 	staged.Close()
 	defer os.Remove(stagedPath)
 
-	asset := u.assetName(version)
-	base := fmt.Sprintf("%s/v%s", u.ReleaseBase, version)
+	asset := u.assetName()
+	d := newDownloader()
 
-	sums, err := u.fetchWithin(ctx, base+"/checksums.txt", downloadTimeout)
+	expected, trusted, err := u.fetchChecksum(ctx, d, version, asset)
 	if err != nil {
-		return fmt.Errorf("下载校验和失败: %w", err)
+		return applied, err
 	}
-	expected, err := expectedChecksum(sums, asset)
-	if err != nil {
-		return err
+	applied.ChecksumTrusted = trusted
+
+	archivePath := stagedPath + ".archive"
+	defer os.Remove(archivePath)
+
+	var lastErr error
+	for _, src := range u.Sources {
+		_ = os.Remove(archivePath)
+		if err := d.fetch(ctx, src.AssetURL(u.Repo, version, asset), archivePath); err != nil {
+			lastErr = err
+			continue
+		}
+		applied.SourceName = src.Name
+		lastErr = nil
+		break
+	}
+	if applied.SourceName == "" {
+		return applied, fmt.Errorf("下载 %s 失败: %w", asset, lastErr)
 	}
 
-	archive, err := u.fetchWithin(ctx, base+"/"+asset, downloadTimeout)
+	archive, err := os.ReadFile(archivePath)
 	if err != nil {
-		return fmt.Errorf("下载 %s 失败: %w", asset, err)
+		return applied, err
 	}
 	actual := sha256.Sum256(archive)
 	if hex.EncodeToString(actual[:]) != expected {
-		return fmt.Errorf("校验和不匹配，已中止更新\n  期望: %s\n  实际: %s", expected, hex.EncodeToString(actual[:]))
+		// 校验失败是安全事件，不换源重试——立刻中止。
+		return applied, fmt.Errorf("校验和不匹配，已中止更新\n  期望: %s\n  实际: %s", expected, hex.EncodeToString(actual[:]))
 	}
 
 	if err := extractBinary(archive, asset, u.binaryName(), stagedPath); err != nil {
-		return err
+		return applied, err
 	}
 	if err := os.Chmod(stagedPath, 0o755); err != nil {
-		return err
+		return applied, err
 	}
 	if err := verifyStaged(ctx, stagedPath, version); err != nil {
-		return err
+		return applied, err
 	}
-	return replaceExecutable(stagedPath, u.ExecPath, u.GOOS == "windows")
+	return applied, replaceExecutable(stagedPath, u.ExecPath, u.GOOS == "windows")
+}
+
+// fetchChecksum 先只向可信源索取 checksums.txt。校验和文件很小，慢链路上也容易
+// 直连成功；只要它来自可信源，归档包就可以安全地走镜像——镜像换不掉包。
+//
+// 降级到镜像只在可信源「不可用」时发生，且会把 trusted 置为 false 供调用方告警。
+// 「取不到 checksums.txt」与「取到了但其中没有该资产」必须区别对待：后者是一个
+// 确定性答复——该资产不存在。此时若改用镜像的 checksums.txt，镜像便能自造资产名
+// 与配套归档，而用户只看到一行降级警告。因此可信源一旦给出确定性答复即失败。
+func (u *Updater) fetchChecksum(ctx context.Context, d *downloader, version, asset string) (string, bool, error) {
+	try := func(want bool) (sum string, ok bool, definitive error) {
+		for _, src := range u.Sources {
+			if src.Trusted != want {
+				continue
+			}
+			sums, err := d.bytes(ctx, src.AssetURL(u.Repo, version, "checksums.txt"))
+			if err != nil {
+				continue // 来源不可用，换下一个
+			}
+			sum, err := expectedChecksum(sums, asset)
+			if err != nil {
+				return "", false, err // 确定性答复：资产不存在
+			}
+			return sum, true, nil
+		}
+		return "", false, nil
+	}
+
+	sum, ok, definitive := try(true)
+	if definitive != nil {
+		return "", false, definitive
+	}
+	if ok {
+		return sum, true, nil
+	}
+
+	sum, ok, definitive = try(false)
+	if definitive != nil {
+		return "", false, definitive
+	}
+	if ok {
+		return sum, false, nil
+	}
+	return "", false, errors.New("下载校验和失败：所有来源均不可用")
 }
 
 // verifyStaged runs the downloaded binary before it takes over. The checksum
@@ -201,12 +270,14 @@ func verifyStaged(ctx context.Context, path, version string) error {
 	return nil
 }
 
-func (u *Updater) assetName(version string) string {
+// assetName 返回本平台的归档名。名称不含版本号——版本由 URL 路径承载，
+// 使 latest/download/X 与 download/v<X>/X 指向同一份文件。
+func (u *Updater) assetName() string {
 	ext := ".tar.gz"
 	if u.GOOS == "windows" {
 		ext = ".zip"
 	}
-	return fmt.Sprintf("ly-%s-%s-%s%s", version, u.GOOS, u.GOARCH, ext)
+	return fmt.Sprintf("ly-%s-%s%s", u.GOOS, u.GOARCH, ext)
 }
 
 func (u *Updater) binaryName() string {
@@ -214,26 +285,6 @@ func (u *Updater) binaryName() string {
 		return "ly.exe"
 	}
 	return "ly"
-}
-
-func (u *Updater) fetchWithin(ctx context.Context, url string, timeout time.Duration) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "ly-cli-updater")
-	resp, err := u.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, url)
-	}
-	return io.ReadAll(resp.Body)
 }
 
 // expectedChecksum pulls the hash for `asset` out of goreleaser's

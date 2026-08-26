@@ -7,3 +7,8 @@
 
 # Local agent design and implementation notes.
 /docs/superpowers/
+/.claude/
+
+# CLI output written into the working directory.
+/generated-images/
+/generated-videos/
