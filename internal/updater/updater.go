@@ -2,7 +2,7 @@
 // Self-update: resolve the latest release, download it, replace this binary.
 //
 // The update path is deliberately identical for every install method. Whether
-// ly arrived via install.sh, npm or go install, we download the GitHub Release
+// ly arrived via install.sh or go install, we download the GitHub Release
 // archive for this platform and overwrite the running executable in place.
 package updater
 
@@ -209,27 +209,43 @@ func (u *Updater) Apply(ctx context.Context, version string) (Applied, error) {
 
 // fetchChecksum 先只向可信源索取 checksums.txt。校验和文件很小，慢链路上也容易
 // 直连成功；只要它来自可信源，归档包就可以安全地走镜像——镜像换不掉包。
-// 仅当可信源全部失败时才降级到镜像，并把 trusted 置为 false。
+//
+// 降级到镜像只在可信源「不可用」时发生，且会把 trusted 置为 false 供调用方告警。
+// 「取不到 checksums.txt」与「取到了但其中没有该资产」必须区别对待：后者是一个
+// 确定性答复——该资产不存在。此时若改用镜像的 checksums.txt，镜像便能自造资产名
+// 与配套归档，而用户只看到一行降级警告。因此可信源一旦给出确定性答复即失败。
 func (u *Updater) fetchChecksum(ctx context.Context, d *downloader, version, asset string) (string, bool, error) {
-	try := func(want bool) (string, bool) {
+	try := func(want bool) (sum string, ok bool, definitive error) {
 		for _, src := range u.Sources {
 			if src.Trusted != want {
 				continue
 			}
 			sums, err := d.bytes(ctx, src.AssetURL(u.Repo, version, "checksums.txt"))
 			if err != nil {
-				continue
+				continue // 来源不可用，换下一个
 			}
-			if sum, err := expectedChecksum(sums, asset); err == nil {
-				return sum, true
+			sum, err := expectedChecksum(sums, asset)
+			if err != nil {
+				return "", false, err // 确定性答复：资产不存在
 			}
+			return sum, true, nil
 		}
-		return "", false
+		return "", false, nil
 	}
-	if sum, ok := try(true); ok {
+
+	sum, ok, definitive := try(true)
+	if definitive != nil {
+		return "", false, definitive
+	}
+	if ok {
 		return sum, true, nil
 	}
-	if sum, ok := try(false); ok {
+
+	sum, ok, definitive = try(false)
+	if definitive != nil {
+		return "", false, definitive
+	}
+	if ok {
 		return sum, false, nil
 	}
 	return "", false, errors.New("下载校验和失败：所有来源均不可用")

@@ -1,10 +1,10 @@
-# goreleaser — cross-compile + GitHub Release + npm publish in one command.
+# goreleaser — cross-compile + GitHub Release in one command.
 #
-#   git tag v0.1.2 && git push --tags
+#   git tag v0.1.6 && git push --tags
 #   goreleaser release --clean
 #
 # Requires: GITHUB_TOKEN env var with repo write permissions.
-# npm is published manually after the GitHub Release assets are available.
+# GitHub Actions 在本仓库不可用，发版须在本地执行。
 version: 2
 
 before:

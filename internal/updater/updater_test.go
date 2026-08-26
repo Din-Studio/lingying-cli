@@ -323,6 +323,34 @@ func TestApplyMarksChecksumUntrustedWhenOnlyMirrorServesIt(t *testing.T) {
 	}
 }
 
+// 可信源给出的答复是确定性的：它成功返回了 checksums.txt 而其中没有该资产，
+// 就说明这个资产不存在。此时若转而采信镜像的另一份 checksums.txt，镜像便可
+// 自造资产名与配套归档，用户却只看到一行降级警告。必须直接失败。
+func TestApplyRefusesMirrorChecksumWhenTrustedSourceSaysAssetIsAbsent(t *testing.T) {
+	requirePOSIXShell(t)
+	archive := tarGz(t, "ly", fakeBinary("0.2.0"))
+
+	// 直连正常响应，但 checksums.txt 里只有别的资产。
+	up, _ := testUpdater(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/checksums.txt") {
+			w.Write([]byte(strings.Repeat("a", 64) + "  ly-some-other-platform.tar.gz\n"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	mirror := httptest.NewServer(serveRelease("0.2.0", archive))
+	defer mirror.Close()
+	up.Sources = append(up.Sources, Source{Name: "可用镜像", Base: mirror.URL})
+
+	if _, err := up.Apply(context.Background(), "0.2.0"); err == nil {
+		t.Fatal("Apply() error = nil, want failure — 不得改用镜像的校验和")
+	}
+	got, _ := os.ReadFile(up.ExecPath)
+	if string(got) != "old binary" {
+		t.Fatalf("executable = %q, want the original left untouched", got)
+	}
+}
+
 func TestApplyAbortsOnChecksumMismatch(t *testing.T) {
 	archive := tarGz(t, "ly", "tampered binary")
 	asset := testAsset()

@@ -19,8 +19,10 @@ var updateCmd = &cobra.Command{
 	Long: `ly update — 更新到最新版本
 
 从 GitHub Releases 下载当前平台的发布包，校验 SHA-256 后替换正在运行的
-可执行文件。无论 ly 是通过安装脚本、npm 还是 go install 安装的，更新方式
-都相同。
+可执行文件。无论 ly 是通过安装脚本还是 go install 安装的，更新方式都相同。
+
+下载优先直连 GitHub，失败时自动回退到公共加速镜像；可用 LY_MIRROR 指定
+自己的镜像，它排在公共镜像之前。
 
   ly update            更新到最新版本
   ly update --check    只检查是否有新版本，不做任何改动`,
