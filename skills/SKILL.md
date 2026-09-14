@@ -46,7 +46,7 @@ ly text --param temperature=0.7 "写一个更有创意的标题"            # �
 ```bash
 ly image -p "赛博朋克猫"                                       # 动态发现的默认图片模型
 ly image --model nanobanana2 -p "cat"                          # 指定模型
-ly image -p "把背景换成海滩" -i ./photo.jpg                     # 图生图 (需 OAuth)
+ly image -p "把背景换成海滩" -i ./photo.jpg                     # 图生图 (本地文件)
 ly image --model 抠图 -i ./photo.jpg                            # 图片编辑
 ly image -p "cat" --param resolution=4K --param aspect_ratio=16:9  # 附加参数
 ```
@@ -125,7 +125,6 @@ done < prompts.txt
 | 场景 | 处理 |
 |------|------|
 | 未鉴权 | 引导用户 ly auth login 或 ly auth set-key |
-| API Key + 本地文件 | 提示切换到 OAuth 或使用远程 URL |
 | Gateway 422 参数错误 | 读 error 中的字段提示，修改参数后重试 |
 | 轮询失败 | 自动重试 5 次后熔断 |
 | 任务超时 | 保存 task_id，运行 `ly --json task get <task_id>` 查询 |
