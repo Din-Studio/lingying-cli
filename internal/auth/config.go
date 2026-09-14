@@ -24,9 +24,10 @@ func (r Resolved) Display() string {
 	return fmt.Sprintf("%s (%s)", r.Value[:4]+"****", r.Type)
 }
 
-func (r Resolved) HasUpload() bool {
-	return r.Type == "oauth"
-}
+// HasUpload reports whether this credential can upload local files. Uploads are
+// brokered by the Gateway now, which accepts both credential kinds, so this is
+// always true. It is kept because `ly auth show` publishes a has_upload field.
+func (r Resolved) HasUpload() bool { return true }
 
 type Config struct {
 	Version      int    `json:"version"`

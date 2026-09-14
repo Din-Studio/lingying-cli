@@ -41,10 +41,6 @@ func runMedia(
 		return commandFailure(jsonMode, "no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", nil)
 	}
 
-	if len(inputFiles) > 0 && !resolved.HasUpload() {
-		return commandFailure(jsonMode, "upload_auth_required", "本地文件上传仅 OAuth 模式下可用，请先 ly auth login。或传入 URL 而非本地路径。", nil)
-	}
-
 	c := client.New(resolved.Value)
 	ctx := context.Background()
 	allModels, err := c.ListModels(ctx)

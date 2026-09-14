@@ -7,8 +7,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Din-Studio/lingying-cli/internal/auth"
 	"github.com/Din-Studio/lingying-cli/internal/client"
 )
+
+func TestAPIKeyCredentialCanUploadLocalFiles(t *testing.T) {
+	c := auth.Resolved{Type: "apikey", Value: "sk-test"}
+	if !c.HasUpload() {
+		t.Fatal("api key credentials must be allowed to upload once uploads go through the Gateway")
+	}
+}
 
 func TestSelectMediaModelRejectsMissingRequestedModel(t *testing.T) {
 	models := []client.GatewayModel{{ID: "image-1", ModelID: "model-image-1", ModelType: "image", DisplayName: "Image One"}}
