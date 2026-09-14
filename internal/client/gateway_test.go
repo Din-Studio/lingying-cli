@@ -461,7 +461,7 @@ func TestUploadSmallReplaysRequiredHeaders(t *testing.T) {
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v1/files/presigned":
-			_, _ = w.Write([]byte(`{"file_id":"f1","upload_url":"` + srv.URL + `/put","required_headers":{"Content-Type":"application/octet-stream","Cache-Control":"public, max-age=31536000, immutable"}}`))
+			_, _ = w.Write([]byte(`{"file_id":"f1","upload_url":"` + srv.URL + `/put","required_headers":{"Content-Type":"application/x-assethub-derived","Cache-Control":"public, max-age=31536000, immutable"}}`))
 		case r.URL.Path == "/put":
 			putHeaders = r.Header.Clone()
 			w.Header().Set("ETag", `"e1"`)
@@ -483,8 +483,12 @@ func TestUploadSmallReplaysRequiredHeaders(t *testing.T) {
 	}
 
 	// The server signs the Content-Type it derived itself, so the client must
-	// send that value back rather than its own guess.
-	if got := putHeaders.Get("Content-Type"); got != "application/octet-stream" {
+	// send that value back rather than its own guess. This value is deliberately
+	// NOT what the client would guess from the ".bin" extension
+	// (mime.TypeByExtension(".bin") == "application/octet-stream"), so this
+	// assertion can actually distinguish "replayed from server" from "guessed
+	// locally".
+	if got := putHeaders.Get("Content-Type"); got != "application/x-assethub-derived" {
 		t.Fatalf("Content-Type: got %q, want the server's signed value", got)
 	}
 	if got := putHeaders.Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
