@@ -537,3 +537,66 @@ func TestUploadMultipartSendsNoContentTypeOnPartPUT(t *testing.T) {
 		t.Fatalf("part PUT must send no Content-Type, got %q", got)
 	}
 }
+
+func TestWithProjectIDSetsHeaderOnGatewayCalls(t *testing.T) {
+	var gotHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Project-Id")
+		_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+	}))
+	defer server.Close()
+
+	c := NewWithBaseURL("secret", server.URL).WithProjectID("proj-123")
+	if _, err := c.ListModels(context.Background()); err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	if gotHeader != "proj-123" {
+		t.Fatalf("X-Project-Id = %q, want proj-123", gotHeader)
+	}
+}
+
+func TestWithoutProjectIDOmitsHeader(t *testing.T) {
+	var sawHeader bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, sawHeader = r.Header["X-Project-Id"]
+		_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+	}))
+	defer server.Close()
+
+	c := NewWithBaseURL("secret", server.URL)
+	if _, err := c.ListModels(context.Background()); err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	if sawHeader {
+		t.Fatal("X-Project-Id header must be absent when project ID is unset")
+	}
+}
+
+func TestWithProjectIDSetsHeaderOnUploadControlPlaneCalls(t *testing.T) {
+	var initHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/files/presigned":
+			initHeader = r.Header.Get("X-Project-Id")
+			_, _ = w.Write([]byte(`{"file_id":"f-1","status":"completed","deduplicated":true}`))
+		case "/v1/files/f-1/link":
+			_, _ = w.Write([]byte(`{"download_url":"https://files.test/hello"}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "hello.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := NewWithBaseURL("secret", server.URL).WithProjectID("proj-123")
+	if _, err := c.UploadFile(context.Background(), "hello.txt", path); err != nil {
+		t.Fatalf("UploadFile() error = %v", err)
+	}
+	if initHeader != "proj-123" {
+		t.Fatalf("presigned init X-Project-Id = %q, want proj-123", initHeader)
+	}
+}

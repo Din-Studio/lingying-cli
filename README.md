@@ -248,6 +248,8 @@ LY_CONFIG_FILE=./ly-config.json ly auth show
 
 `auth logout` 只删除本地凭据，保留 `output_dir` 和默认模型等非凭据设置。环境变量由调用方管理，不会被 `logout` 修改。
 
+需要把用量归因到某个项目时，设置 `LY_PROJECT_ID` 或使用 `--project <id>`（后者优先）；这是可选的自我约束，不设置就不归因，非项目成员会收到网关的 403。
+
 ## Agent 集成
 
 仓库包含 [`skills/SKILL.md`](skills/SKILL.md)，可显式复制或安装到所使用 Agent 的 skills 目录。CLI 不会自动改写 OpenClaw、Codex 或其他 Agent 的工作区规则。

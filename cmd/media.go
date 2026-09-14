@@ -41,7 +41,7 @@ func runMedia(
 		return commandFailure(jsonMode, "no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", nil)
 	}
 
-	c := client.New(resolved.Value)
+	c := client.New(resolved.Value).WithProjectID(resolveProjectID(cmd))
 	ctx := context.Background()
 	allModels, err := c.ListModels(ctx)
 	if err != nil {

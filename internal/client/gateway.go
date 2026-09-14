@@ -54,9 +54,10 @@ type ModelListResponse struct {
 // ── HTTP client ──
 
 type Client struct {
-	token   string
-	baseURL string
-	http    *http.Client
+	token     string
+	baseURL   string
+	projectID string
+	http      *http.Client
 }
 
 type ErrorDetail struct {
@@ -101,6 +102,14 @@ func NewWithBaseURL(token, baseURL string) *Client {
 	}
 }
 
+// WithProjectID attaches an X-Project-Id header to Gateway calls for usage
+// attribution. Purely optional: callers decide whether to constrain their own
+// calls to a project, the CLI never forces it.
+func (c *Client) WithProjectID(id string) *Client {
+	c.projectID = id
+	return c
+}
+
 func (c *Client) gateway(path string) string { return c.baseURL + path }
 
 func (c *Client) MediaEndpoint(path string) string { return c.gateway(path) }
@@ -122,6 +131,9 @@ func (c *Client) doJSON(ctx context.Context, method, url string, body any) ([]by
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.projectID != "" {
+		req.Header.Set("X-Project-Id", c.projectID)
+	}
 	if method != "GET" {
 		req.Header.Set("Content-Type", "application/json")
 	}

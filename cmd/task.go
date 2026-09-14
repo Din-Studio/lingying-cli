@@ -27,7 +27,7 @@ var taskGetCmd = &cobra.Command{
 			return commandFailure(jsonMode, "no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", nil)
 		}
 
-		body, err := client.New(resolved.Value).GetTask(context.Background(), args[0])
+		body, err := client.New(resolved.Value).WithProjectID(resolveProjectID(cmd)).GetTask(context.Background(), args[0])
 		if err != nil {
 			return err
 		}

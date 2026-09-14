@@ -46,7 +46,7 @@ var textCmd = &cobra.Command{
 			modelID = auth.GetDefaultModel()
 		}
 		// Discover the model to get api_format
-		c := client.New(resolved.Value)
+		c := client.New(resolved.Value).WithProjectID(resolveProjectID(cmd))
 		ctx := context.Background()
 		allModels, err := c.ListModels(ctx)
 		if err != nil {

@@ -28,6 +28,8 @@ metadata:
 
 OAuth 与 API Key 均支持本地文件上传 (经 Gateway 代理上传并拿到 download_url)。
 
+Agent 可设置 `LY_PROJECT_ID`（或 `--project <id>`，优先级更高）把用量归因到某个项目；这是可选的自我约束而非强制要求，非项目成员调用会收到网关 403 FORBIDDEN。
+
 ## 快捷命令
 
 ### 文本对话

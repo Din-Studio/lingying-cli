@@ -35,7 +35,7 @@ var modelListCmd = &cobra.Command{
 			return commandFailure(jsonMode, "no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", nil)
 		}
 
-		c := client.New(resolved.Value)
+		c := client.New(resolved.Value).WithProjectID(resolveProjectID(cmd))
 		models, err := c.ListModels(context.Background())
 		if err != nil {
 			return err
@@ -94,7 +94,7 @@ var modelInfoCmd = &cobra.Command{
 		}
 
 		query := args[0]
-		c := client.New(resolved.Value)
+		c := client.New(resolved.Value).WithProjectID(resolveProjectID(cmd))
 		models, err := c.ListModels(context.Background())
 		if err != nil {
 			return err
@@ -180,7 +180,7 @@ var modelSearchCmd = &cobra.Command{
 		}
 
 		keyword := strings.ToLower(args[0])
-		c := client.New(resolved.Value)
+		c := client.New(resolved.Value).WithProjectID(resolveProjectID(cmd))
 		models, err := c.ListModels(context.Background())
 		if err != nil {
 			return err
