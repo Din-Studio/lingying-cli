@@ -112,7 +112,7 @@ func TestUploadFilePresignedSmallFlow(t *testing.T) {
 				req.Hash != "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" {
 				t.Errorf("init request = %+v", req)
 			}
-			_, _ = w.Write([]byte(`{"file_id":"f-1","upload_url":"` + serverURL + `/put/f-1","status":"pending","deduplicated":false}`))
+			_, _ = w.Write([]byte(`{"file_id":"f-1","upload_url":"` + serverURL + `/put/f-1","status":"pending","deduplicated":false,"required_headers":{"Content-Type":"text/plain; charset=utf-8"}}`))
 		case "PUT /put/f-1":
 			putAuth = r.Header.Get("Authorization")
 			putContentType = r.Header.Get("Content-Type")
@@ -452,5 +452,84 @@ func TestUploadFileSurfacesGatewayErrorCode(t *testing.T) {
 	detail := ErrorDetails(err)
 	if detail.Code != "USER_DISABLED" {
 		t.Fatalf("error_code must survive as a structured detail, got %q (err=%v)", detail.Code, err)
+	}
+}
+
+func TestUploadSmallReplaysRequiredHeaders(t *testing.T) {
+	var putHeaders http.Header
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/files/presigned":
+			_, _ = w.Write([]byte(`{"file_id":"f1","upload_url":"` + srv.URL + `/put","required_headers":{"Content-Type":"application/octet-stream","Cache-Control":"public, max-age=31536000, immutable"}}`))
+		case r.URL.Path == "/put":
+			putHeaders = r.Header.Clone()
+			w.Header().Set("ETag", `"e1"`)
+		case strings.HasSuffix(r.URL.Path, "/completion"):
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			_, _ = w.Write([]byte(`{"download_url":"https://cdn/x"}`))
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.bin")
+	if err := os.WriteFile(path, []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewWithBaseURL("secret", srv.URL).UploadFile(context.Background(), "a.bin", path); err != nil {
+		t.Fatalf("upload failed: %v", err)
+	}
+
+	// The server signs the Content-Type it derived itself, so the client must
+	// send that value back rather than its own guess.
+	if got := putHeaders.Get("Content-Type"); got != "application/octet-stream" {
+		t.Fatalf("Content-Type: got %q, want the server's signed value", got)
+	}
+	if got := putHeaders.Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Fatalf("Cache-Control: got %q, want it replayed", got)
+	}
+	if putHeaders.Get("Authorization") != "" {
+		t.Fatal("presigned PUT must not carry an Authorization header")
+	}
+}
+
+func TestUploadMultipartSendsNoContentTypeOnPartPUT(t *testing.T) {
+	oldThreshold, oldPart := multipartThreshold, uploadPartSize
+	multipartThreshold, uploadPartSize = 4, 4
+	defer func() { multipartThreshold, uploadPartSize = oldThreshold, oldPart }()
+
+	var partHeaders http.Header
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/files/multipart":
+			_, _ = w.Write([]byte(`{"file_id":"f1"}`))
+		case strings.HasSuffix(r.URL.Path, "/multipart/parts"):
+			_, _ = w.Write([]byte(`{"upload_url":"` + srv.URL + `/put"}`))
+		case r.URL.Path == "/put":
+			partHeaders = r.Header.Clone()
+			w.Header().Set("ETag", `"e1"`)
+		case strings.HasSuffix(r.URL.Path, "/multipart/completion"):
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			_, _ = w.Write([]byte(`{"download_url":"https://cdn/x"}`))
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.bin")
+	if err := os.WriteFile(path, []byte("12345678"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewWithBaseURL("secret", srv.URL).UploadFile(context.Background(), "big.bin", path); err != nil {
+		t.Fatalf("upload failed: %v", err)
+	}
+
+	// OSS signs an empty content-type for part URLs, so sending one is a 403.
+	if got := partHeaders.Get("Content-Type"); got != "" {
+		t.Fatalf("part PUT must send no Content-Type, got %q", got)
 	}
 }

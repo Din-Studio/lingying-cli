@@ -449,10 +449,11 @@ var (
 )
 
 type presignedInitResponse struct {
-	FileID       string `json:"file_id"`
-	UploadURL    string `json:"upload_url"`
-	Status       string `json:"status"`
-	Deduplicated bool   `json:"deduplicated"`
+	FileID          string            `json:"file_id"`
+	UploadURL       string            `json:"upload_url"`
+	Status          string            `json:"status"`
+	Deduplicated    bool              `json:"deduplicated"`
+	RequiredHeaders map[string]string `json:"required_headers"`
 }
 
 // UploadFile 通过 AssetHub 预签名流程上传本地文件并返回下载直链：
@@ -513,7 +514,7 @@ func (c *Client) uploadSmall(ctx context.Context, file *os.File, name, contentTy
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return "", fmt.Errorf("读取上传文件失败: %w", err)
 	}
-	if _, err := c.putPresigned(ctx, init.UploadURL, contentType, file, size); err != nil {
+	if _, err := c.putPresigned(ctx, init.UploadURL, init.RequiredHeaders, file, size); err != nil {
 		return "", err
 	}
 	if err := c.fileAPI(ctx, http.MethodPost, "/v1/files/"+init.FileID+"/completion", nil, nil); err != nil {
@@ -597,7 +598,7 @@ func (c *Client) uploadMultipart(ctx context.Context, localPath, name, contentTy
 					setErr(err)
 					return
 				}
-				etag, err := c.putPresigned(ctx, part.UploadURL, contentType, io.NewSectionReader(f, offset, length), length)
+				etag, err := c.putPresigned(ctx, part.UploadURL, nil, io.NewSectionReader(f, offset, length), length)
 				if err != nil {
 					setErr(err)
 					return
@@ -621,15 +622,17 @@ func (c *Client) uploadMultipart(ctx context.Context, localPath, name, contentTy
 }
 
 // putPresigned 把 body PUT 到预签名 URL。不带应用鉴权头（URL 自鉴权）。
-// Content-Type 参与签名，必须与 init 时一致。返回响应头 ETag（分片上传需要）。
-func (c *Client) putPresigned(ctx context.Context, url, contentType string, body io.Reader, size int64) (string, error) {
+// headers 必须原样来自服务端：OSS 把 Content-Type 计入签名，而服务端签的是它
+// 自己按文件名推导的值，不是客户端提交的那个；分片 URL 则签空 Content-Type，
+// 必须一个头都不带。返回响应头 ETag（分片上传需要）。
+func (c *Client) putPresigned(ctx context.Context, url string, headers map[string]string, body io.Reader, size int64) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
 	if err != nil {
 		return "", err
 	}
 	req.ContentLength = size
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
