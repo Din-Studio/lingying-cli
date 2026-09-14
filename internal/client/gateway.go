@@ -438,7 +438,7 @@ func (c *Client) Download(ctx context.Context, url, path string) error {
 	return nil
 }
 
-// ── File upload (OAuth only, presigned) ──
+// ── File upload (presigned) ──
 
 // 上传参数为包级变量（非 const），测试可调小以触发分片路径。
 // 数值与 media-sync worker 的生产默认值一致。
@@ -456,7 +456,7 @@ type presignedInitResponse struct {
 	RequiredHeaders map[string]string `json:"required_headers"`
 }
 
-// UploadFile 通过 AssetHub 预签名流程上传本地文件并返回下载直链：
+// UploadFile 通过 Gateway 代理的 AssetHub 预签名流程上传本地文件并返回下载直链：
 // init →（未命中去重时）PUT 预签名 URL → completion → link。
 func (c *Client) UploadFile(ctx context.Context, name, localPath string) (string, error) {
 	file, err := os.Open(localPath)
