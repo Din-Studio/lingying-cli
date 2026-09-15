@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Din-Studio/lingying-cli/internal/output"
+	"github.com/spf13/cobra"
 )
 
 func TestCommandFailureUsesNonZeroErrorInBothModes(t *testing.T) {
@@ -31,5 +32,35 @@ func TestReadInteractivePromptReportsEmptyInput(t *testing.T) {
 	_, err := readInteractivePrompt(strings.NewReader("\n"))
 	if err == nil || !errors.Is(err, errEmptyPrompt) {
 		t.Fatalf("error = %v, want errEmptyPrompt", err)
+	}
+}
+
+func newProjectFlagCmd() *cobra.Command {
+	c := &cobra.Command{}
+	c.Flags().String("project", "", "")
+	return c
+}
+
+func TestResolveProjectIDReturnsEmptyByDefault(t *testing.T) {
+	if got := resolveProjectID(newProjectFlagCmd()); got != "" {
+		t.Fatalf("resolveProjectID() = %q, want empty", got)
+	}
+}
+
+func TestResolveProjectIDUsesEnvWhenFlagUnset(t *testing.T) {
+	t.Setenv("LY_PROJECT_ID", "proj-env")
+	if got := resolveProjectID(newProjectFlagCmd()); got != "proj-env" {
+		t.Fatalf("resolveProjectID() = %q, want proj-env", got)
+	}
+}
+
+func TestResolveProjectIDFlagOverridesEnv(t *testing.T) {
+	t.Setenv("LY_PROJECT_ID", "proj-env")
+	c := newProjectFlagCmd()
+	if err := c.Flags().Set("project", "proj-flag"); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveProjectID(c); got != "proj-flag" {
+		t.Fatalf("resolveProjectID() = %q, want proj-flag (flag wins)", got)
 	}
 }

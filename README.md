@@ -98,7 +98,7 @@ ly update --check    # 只检查是否有新版本，不做任何改动
 # 1. 保存 OAuth Access Token（支持本地文件上传）
 ly auth login
 
-# 或保存 API Key（可调用文本与使用 URL 的媒体任务）
+# 或保存 API Key（同样支持本地文件上传）
 ly auth set-key <your-key>
 
 # 2. 验证鉴权和 Gateway 连通性
@@ -169,7 +169,7 @@ ly video --model seedance2.0 -p "镜头推进" --param 'images=["https://example
 
 未知的顶层字段仍保留为字符串，由 Gateway 校验；未声明的嵌套路径会在 CLI 端报错，因为它无法表示为合法嵌套请求。CLI 会补齐缺失的“必填且带 default”字段，用户传入的值优先；不做完整本地 schema 校验。位置提示词中的 `=` 会保持为提示词文本，额外字段请始终显式使用 `--param`。
 
-输入既可以是本地路径，也可以是 `http://` 或 `https://` URL。URL 输入可使用 OAuth 或 API Key；本地输入需要 OAuth，CLI 会自动上传：小文件走单次直传，大文件（≥50 MiB）自动切换为分片上传。对同时支持图片和视频输入的模型（如 Seedance），CLI 按文件扩展名将 `-i` 文件放入 `images` 或 `videos` 字段。单个本地文件上限为 **1 GiB**。
+输入既可以是本地路径，也可以是 `http://` 或 `https://` URL。OAuth 与 API Key 均可用于 URL 输入或本地输入；本地输入时 CLI 会自动上传：小文件走单次直传，大文件（≥50 MiB）自动切换为分片上传。对同时支持图片和视频输入的模型（如 Seedance），CLI 按文件扩展名将 `-i` 文件放入 `images` 或 `videos` 字段。单个本地文件上限为 **1 GiB**。
 
 ```bash
 # 本地小文件（<50 MiB）：单次直传
@@ -248,6 +248,8 @@ LY_CONFIG_FILE=./ly-config.json ly auth show
 
 `auth logout` 只删除本地凭据，保留 `output_dir` 和默认模型等非凭据设置。环境变量由调用方管理，不会被 `logout` 修改。
 
+需要把用量归因到某个项目时，设置 `LY_PROJECT_ID` 或使用 `--project <id>`（后者优先）；这是可选的自我约束，不设置就不归因，非项目成员会收到网关的 403。
+
 ## Agent 集成
 
 仓库包含 [`skills/SKILL.md`](skills/SKILL.md)，可显式复制或安装到所使用 Agent 的 skills 目录。CLI 不会自动改写 OpenClaw、Codex 或其他 Agent 的工作区规则。
@@ -293,7 +295,7 @@ Gateway 返回的结构化错误会被保留。例如 `INSUFFICIENT_BALANCE` 表
 
 ### 本地文件上传被拒绝
 
-本地文件上传只接受 OAuth Access Token。运行 `ly auth login`，或将本地文件替换为远程 `https://` URL。请确认单个文件不超过 1 GiB，且本地路径可读。
+OAuth Access Token 和 API Key 均可上传本地文件。请先运行 `ly check` 确认鉴权和 Gateway 连通性；确认单个文件不超过 1 GiB，且本地路径可读，或将本地文件替换为远程 `https://` URL。
 
 ### 媒体任务超时或调用中断
 

@@ -41,11 +41,7 @@ func runMedia(
 		return commandFailure(jsonMode, "no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", nil)
 	}
 
-	if len(inputFiles) > 0 && !resolved.HasUpload() {
-		return commandFailure(jsonMode, "upload_auth_required", "本地文件上传仅 OAuth 模式下可用，请先 ly auth login。或传入 URL 而非本地路径。", nil)
-	}
-
-	c := client.New(resolved.Value)
+	c := client.New(resolved.Value).WithProjectID(resolveProjectID(cmd))
 	ctx := context.Background()
 	allModels, err := c.ListModels(ctx)
 	if err != nil {
@@ -368,7 +364,7 @@ var imageCmd = &cobra.Command{
 	Short: "图片生成和编辑",
 	Long: `图片生成和编辑
 
--i 支持本地路径或 URL。本地文件需要 OAuth 登录，由 CLI 自动上传：
+-i 支持本地路径或 URL。本地文件由 CLI 自动上传：
 小于 50 MiB 走单次预签名 PUT，大于等于 50 MiB 自动切分为分片（预签名 multipart）并发上传。
 单个本地文件上限为 1 GiB。`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -397,7 +393,7 @@ var videoCmd = &cobra.Command{
 	Short: "视频生成和编辑",
 	Long: `视频生成和编辑
 
--i 支持本地路径或 URL。本地文件需要 OAuth 登录，由 CLI 自动上传：
+-i 支持本地路径或 URL。本地文件由 CLI 自动上传：
 小于 50 MiB 走单次预签名 PUT，大于等于 50 MiB 自动切分为分片（预签名 multipart）并发上传。
 单个本地文件上限为 1 GiB。`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -426,7 +422,7 @@ var audioCmd = &cobra.Command{
 	Short: "音频生成",
 	Long: `音频生成
 
--i 支持本地路径或 URL。本地文件需要 OAuth 登录，由 CLI 自动上传：
+-i 支持本地路径或 URL。本地文件由 CLI 自动上传：
 小于 50 MiB 走单次预签名 PUT，大于等于 50 MiB 自动切分为分片（预签名 multipart）并发上传。
 单个本地文件上限为 1 GiB。`,
 	RunE: func(cmd *cobra.Command, args []string) error {

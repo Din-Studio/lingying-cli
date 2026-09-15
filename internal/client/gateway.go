@@ -23,7 +23,6 @@ import (
 
 const (
 	GatewayBase = "https://console.echojoy.cn/gateway"
-	FileService = "https://file.echojoy.cn"
 	// MaxUploadBytes matches the guaranteed single-file capacity of the
 	// pre-signed cloud-storage upload path.
 	MaxUploadBytes int64 = 1024 * 1024 * 1024
@@ -55,10 +54,10 @@ type ModelListResponse struct {
 // ── HTTP client ──
 
 type Client struct {
-	token          string
-	baseURL        string
-	fileServiceURL string
-	http           *http.Client
+	token     string
+	baseURL   string
+	projectID string
+	http      *http.Client
 }
 
 type ErrorDetail struct {
@@ -94,19 +93,21 @@ func New(token string) *Client {
 
 // NewWithBaseURL creates a client for an alternate Gateway endpoint. It keeps
 // HTTP integration tests isolated and is also useful for self-hosted gateways.
+// Uploads go through the Gateway too, so one base URL covers every call.
 func NewWithBaseURL(token, baseURL string) *Client {
-	return NewWithEndpoints(token, baseURL, FileService)
+	return &Client{
+		token:   token,
+		baseURL: strings.TrimRight(baseURL, "/"),
+		http:    &http.Client{Timeout: 120 * time.Second},
+	}
 }
 
-// NewWithEndpoints creates a client with explicit Gateway and file-service
-// URLs. It exists for self-hosted deployments and HTTP integration tests.
-func NewWithEndpoints(token, baseURL, fileServiceURL string) *Client {
-	return &Client{
-		token:          token,
-		baseURL:        strings.TrimRight(baseURL, "/"),
-		fileServiceURL: strings.TrimRight(fileServiceURL, "/"),
-		http:           &http.Client{Timeout: 120 * time.Second},
-	}
+// WithProjectID attaches an X-Project-Id header to Gateway calls for usage
+// attribution. Purely optional: callers decide whether to constrain their own
+// calls to a project, the CLI never forces it.
+func (c *Client) WithProjectID(id string) *Client {
+	c.projectID = id
+	return c
 }
 
 func (c *Client) gateway(path string) string { return c.baseURL + path }
@@ -130,6 +131,9 @@ func (c *Client) doJSON(ctx context.Context, method, url string, body any) ([]by
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.projectID != "" {
+		req.Header.Set("X-Project-Id", c.projectID)
+	}
 	if method != "GET" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -446,7 +450,7 @@ func (c *Client) Download(ctx context.Context, url, path string) error {
 	return nil
 }
 
-// ── File upload (OAuth only, presigned) ──
+// ── File upload (presigned) ──
 
 // 上传参数为包级变量（非 const），测试可调小以触发分片路径。
 // 数值与 media-sync worker 的生产默认值一致。
@@ -457,13 +461,14 @@ var (
 )
 
 type presignedInitResponse struct {
-	FileID       string `json:"file_id"`
-	UploadURL    string `json:"upload_url"`
-	Status       string `json:"status"`
-	Deduplicated bool   `json:"deduplicated"`
+	FileID          string            `json:"file_id"`
+	UploadURL       string            `json:"upload_url"`
+	Status          string            `json:"status"`
+	Deduplicated    bool              `json:"deduplicated"`
+	RequiredHeaders map[string]string `json:"required_headers"`
 }
 
-// UploadFile 通过 AssetHub 预签名流程上传本地文件并返回下载直链：
+// UploadFile 通过 Gateway 代理的 AssetHub 预签名流程上传本地文件并返回下载直链：
 // init →（未命中去重时）PUT 预签名 URL → completion → link。
 func (c *Client) UploadFile(ctx context.Context, name, localPath string) (string, error) {
 	file, err := os.Open(localPath)
@@ -505,7 +510,7 @@ func (c *Client) uploadSmall(ctx context.Context, file *os.File, name, contentTy
 		return "", fmt.Errorf("计算文件哈希失败: %w", err)
 	}
 	var init presignedInitResponse
-	err := c.fileAPI(ctx, http.MethodPost, "/api/v1/files/presigned", map[string]any{
+	err := c.fileAPI(ctx, http.MethodPost, "/v1/files/presigned", map[string]any{
 		"name":         name,
 		"size":         size,
 		"content_type": contentType,
@@ -521,10 +526,10 @@ func (c *Client) uploadSmall(ctx context.Context, file *os.File, name, contentTy
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return "", fmt.Errorf("读取上传文件失败: %w", err)
 	}
-	if _, err := c.putPresigned(ctx, init.UploadURL, contentType, file, size); err != nil {
+	if _, err := c.putPresigned(ctx, init.UploadURL, init.RequiredHeaders, file, size); err != nil {
 		return "", err
 	}
-	if err := c.fileAPI(ctx, http.MethodPost, "/api/v1/files/"+init.FileID+"/completion", nil, nil); err != nil {
+	if err := c.fileAPI(ctx, http.MethodPost, "/v1/files/"+init.FileID+"/completion", nil, nil); err != nil {
 		return "", err
 	}
 	return init.FileID, nil
@@ -537,7 +542,7 @@ func (c *Client) uploadMultipart(ctx context.Context, localPath, name, contentTy
 	var init struct {
 		FileID string `json:"file_id"`
 	}
-	err := c.fileAPI(ctx, http.MethodPost, "/api/v1/files/multipart", map[string]any{
+	err := c.fileAPI(ctx, http.MethodPost, "/v1/files/multipart", map[string]any{
 		"name":         name,
 		"size":         size,
 		"content_type": contentType,
@@ -597,7 +602,7 @@ func (c *Client) uploadMultipart(ctx context.Context, localPath, name, contentTy
 				var part struct {
 					UploadURL string `json:"upload_url"`
 				}
-				err := c.fileAPI(ctx, http.MethodPost, "/api/v1/files/"+init.FileID+"/multipart/parts", map[string]any{
+				err := c.fileAPI(ctx, http.MethodPost, "/v1/files/"+init.FileID+"/multipart/parts", map[string]any{
 					"file_id":     init.FileID,
 					"part_number": idx + 1,
 				}, &part)
@@ -605,7 +610,7 @@ func (c *Client) uploadMultipart(ctx context.Context, localPath, name, contentTy
 					setErr(err)
 					return
 				}
-				etag, err := c.putPresigned(ctx, part.UploadURL, contentType, io.NewSectionReader(f, offset, length), length)
+				etag, err := c.putPresigned(ctx, part.UploadURL, nil, io.NewSectionReader(f, offset, length), length)
 				if err != nil {
 					setErr(err)
 					return
@@ -619,7 +624,7 @@ func (c *Client) uploadMultipart(ctx context.Context, localPath, name, contentTy
 		return "", firstErr
 	}
 
-	if err := c.fileAPI(ctx, http.MethodPost, "/api/v1/files/"+init.FileID+"/multipart/completion", map[string]any{
+	if err := c.fileAPI(ctx, http.MethodPost, "/v1/files/"+init.FileID+"/multipart/completion", map[string]any{
 		"file_id": init.FileID,
 		"parts":   parts,
 	}, nil); err != nil {
@@ -629,15 +634,17 @@ func (c *Client) uploadMultipart(ctx context.Context, localPath, name, contentTy
 }
 
 // putPresigned 把 body PUT 到预签名 URL。不带应用鉴权头（URL 自鉴权）。
-// Content-Type 参与签名，必须与 init 时一致。返回响应头 ETag（分片上传需要）。
-func (c *Client) putPresigned(ctx context.Context, url, contentType string, body io.Reader, size int64) (string, error) {
+// headers 必须原样来自服务端：OSS 把 Content-Type 计入签名，而服务端签的是它
+// 自己按文件名推导的值，不是客户端提交的那个；分片 URL 则签空 Content-Type，
+// 必须一个头都不带。返回响应头 ETag（分片上传需要）。
+func (c *Client) putPresigned(ctx context.Context, url string, headers map[string]string, body io.Reader, size int64) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
 	if err != nil {
 		return "", err
 	}
 	req.ContentLength = size
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -656,7 +663,7 @@ func (c *Client) fileLink(ctx context.Context, fileID string) (string, error) {
 	var out struct {
 		DownloadURL string `json:"download_url"`
 	}
-	if err := c.fileAPI(ctx, http.MethodGet, "/api/v1/files/"+fileID+"/link?url_format=direct", nil, &out); err != nil {
+	if err := c.fileAPI(ctx, http.MethodGet, "/v1/files/"+fileID+"/link?url_format=direct", nil, &out); err != nil {
 		return "", err
 	}
 	if out.DownloadURL == "" {
@@ -665,50 +672,17 @@ func (c *Client) fileLink(ctx context.Context, fileID string) (string, error) {
 	return out.DownloadURL, nil
 }
 
-// fileAPI 调用 AssetHub JSON 接口并解开 {code, message, data} 信封。
+// fileAPI calls one of the Gateway's file endpoints. Uploads authenticate with
+// the same credential as every other call, so this is just doJSON plus the
+// decoding the callers want.
 func (c *Client) fileAPI(ctx context.Context, method, path string, body, out any) error {
-	var reader io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		reader = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.fileServiceURL+path, reader)
+	data, err := c.doJSON(ctx, method, c.gateway(path), body)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("文件服务请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return fmt.Errorf("读取文件服务响应失败: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("文件服务 HTTP %d: %s", resp.StatusCode, string(data[:min(len(data), 300)]))
-	}
-	var env struct {
-		Code    int             `json:"code"`
-		Message string          `json:"message"`
-		Data    json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(data, &env); err != nil {
-		return fmt.Errorf("解析文件服务响应失败: %s", string(data[:min(len(data), 200)]))
-	}
-	if env.Code != 0 {
-		return fmt.Errorf("文件服务错误: %s", env.Message)
-	}
 	if out != nil {
-		if err := json.Unmarshal(env.Data, out); err != nil {
-			return fmt.Errorf("解析文件服务响应失败: %s", string(data[:min(len(data), 200)]))
+		if err := json.Unmarshal(data, out); err != nil {
+			return fmt.Errorf("解析文件服务响应失败: %w", err)
 		}
 	}
 	return nil

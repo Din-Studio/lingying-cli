@@ -19,15 +19,16 @@ metadata:
 | 命令 | 说明 |
 |------|------|
 | `ly auth login` | 仅交互式 OAuth Token 粘贴登录（支持文件上传；Agent 不要加 `--json` 调用） |
-| `ly auth set-key <key>` | API Key (不支持本地文件上传) |
+| `ly auth set-key <key>` | API Key (支持本地文件上传) |
 | `ly auth show` | 查看当前鉴权状态 |
 | `ly auth path` | 显示本地配置文件路径 |
 | `ly check` | 检查连通性和可用模型 |
 
 无人值守调用必须设置 `LY_ACCESS_TOKEN`（OAuth）或 `LY_API_KEY`，不要把密钥放到 `ly auth set-key` 的命令行参数中，也不要调用交互式 `auth login`。持久化配置位于 macOS/Linux `~/.config/ly/config.json` 或 Windows `%APPDATA%\\ly\\config.json`；运行 `ly auth path` 可查看实际位置。
 
-OAuth 模式支持本地文件上传 (自动上传到 file.echojoy.cn 并拿到 download_url)。
-API Key 模式只能传远程 URL，不能传本地路径。
+OAuth 与 API Key 均支持本地文件上传 (经 Gateway 代理上传并拿到 download_url)。
+
+Agent 可设置 `LY_PROJECT_ID`（或 `--project <id>`，优先级更高）把用量归因到某个项目；这是可选的自我约束而非强制要求，非项目成员调用会收到网关 403 FORBIDDEN。
 
 ## 快捷命令
 
@@ -47,7 +48,7 @@ ly text --param temperature=0.7 "写一个更有创意的标题"            # �
 ```bash
 ly image -p "赛博朋克猫"                                       # 动态发现的默认图片模型
 ly image --model nanobanana2 -p "cat"                          # 指定模型
-ly image -p "把背景换成海滩" -i ./photo.jpg                     # 图生图 (需 OAuth)
+ly image -p "把背景换成海滩" -i ./photo.jpg                     # 图生图 (本地文件)
 ly image --model 抠图 -i ./photo.jpg                            # 图片编辑
 ly image -p "cat" --param resolution=4K --param aspect_ratio=16:9  # 附加参数
 ```
@@ -126,7 +127,6 @@ done < prompts.txt
 | 场景 | 处理 |
 |------|------|
 | 未鉴权 | 引导用户 ly auth login 或 ly auth set-key |
-| API Key + 本地文件 | 提示切换到 OAuth 或使用远程 URL |
 | Gateway 422 参数错误 | 读 error 中的字段提示，修改参数后重试 |
 | 轮询失败 | 自动重试 5 次后熔断 |
 | 任务超时 | 保存 task_id，运行 `ly --json task get <task_id>` 查询 |

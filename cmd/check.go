@@ -21,7 +21,7 @@ var checkCmd = &cobra.Command{
 			return commandFailure(jsonMode, "no_auth", "未配置鉴权，请先 ly auth login 或 ly auth set-key", map[string]any{"status": "no_auth"})
 		}
 
-		c := client.New(resolved.Value)
+		c := client.New(resolved.Value).WithProjectID(resolveProjectID(cmd))
 		models, err := c.ListModels(context.Background())
 		if err != nil {
 			return err

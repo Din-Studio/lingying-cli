@@ -91,6 +91,7 @@ func init() {
 	rootCmd.PersistentFlags().Bool("dry-run", false, "预览不执行")
 	rootCmd.PersistentFlags().BoolP("verbose", "v", false, "详细输出")
 	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "配置文件路径（覆盖默认位置）")
+	rootCmd.PersistentFlags().String("project", "", "用量归因的项目 ID（覆盖 LY_PROJECT_ID，非项目成员会被网关拒绝）")
 
 	rootCmd.AddCommand(checkCmd)
 	rootCmd.AddCommand(authCmd)
@@ -123,6 +124,16 @@ func isJSON(cmd *cobra.Command) bool {
 func isDryRun(cmd *cobra.Command) bool {
 	v, _ := cmd.Flags().GetBool("dry-run")
 	return v
+}
+
+// resolveProjectID 决定是否给 Gateway 调用附带 X-Project-Id：这是用户主动做的
+// 用量归因约束，不是 CLI 强制参数，因此未设置时返回空字符串（不发送该头）。
+// 优先级：--project 标志 > LY_PROJECT_ID 环境变量。
+func resolveProjectID(cmd *cobra.Command) string {
+	if v, _ := cmd.Flags().GetString("project"); v != "" {
+		return v
+	}
+	return os.Getenv("LY_PROJECT_ID")
 }
 
 // commandFailure keeps the human CLI and the JSON/Agent interface aligned:
